@@ -1,0 +1,110 @@
+// @ts-nocheck
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { GoogleGenerativeAI } from "https://esm.sh/@google/generative-ai@0.21.0";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.7';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+serve(async (req: Request) => {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+
+  try {
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) {
+      throw new Error('No authorization header');
+    }
+
+    // Initialize Supabase Client
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+
+    // Get User and Service Role Client for verification (bypass RLS to ensure role check is definitive)
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      throw new Error('Unauthorized');
+    }
+
+    // Check Admin Role
+    const supabaseAdmin = createClient(supabaseUrl, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('staff_profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .eq('active', true)
+      .single();
+
+    if (profileError || profile?.role !== 'admin') {
+      return new Response(JSON.stringify({ error: 'Access denied. Admin role required.' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { headers, sampleRows } = await req.json();
+    const apiKey = Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY');
+
+    if (!apiKey) {
+      throw new Error('GOOGLE_GENERATIVE_AI_API_KEY is not set');
+    }
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+    const prompt = `
+      You are an expert data analyst. I have a dataset from a CSV/Excel file that I want to import into a reward system.
+      I need you to analyze the headers and sample rows to identify the best column for phone numbers and potentially a reward type.
+
+      Headers: ${JSON.stringify(headers)}
+      Sample Data (first 3 rows): ${JSON.stringify(sampleRows)}
+
+      Rules:
+      1. Look for a column that likely contains phone numbers (standard formats or just digits).
+      2. Look for a column that might indicate a reward type (e.g., "Free Macchiato", "Coffee", "Discount", etc.).
+      3. Return your analysis in JSON format ONLY.
+
+      Expected JSON structure:
+      {
+        "phoneColumn": "name of the column with phone numbers",
+        "rewardTypeColumn": "name of the column with reward types (optional)",
+        "suggestedRewardType": "a default reward type if none found in columns",
+        "confidence": 0.0 to 1.0,
+        "reasoning": "brief explanation of why you chose these columns"
+      }
+    `;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    // Extract JSON from the response
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+
+    if (!analysis) {
+        throw new Error('Gemini failed to generate compatible analysis JSON.');
+    }
+
+    return new Response(JSON.stringify(analysis), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+
+  } catch (error: any) {
+    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+    console.error('Edge Function Error:', errorMessage);
+    return new Response(JSON.stringify({ error: errorMessage }), {
+      status: errorMessage === 'Unauthorized' ? 401 : 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+});
+
+

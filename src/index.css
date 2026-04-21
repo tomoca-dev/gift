@@ -1,0 +1,98 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 30 15% 7%;
+    --foreground: 38 30% 92%;
+
+    --card: 30 12% 12%;
+    --card-foreground: 38 30% 92%;
+
+    --popover: 30 12% 12%;
+    --popover-foreground: 38 30% 92%;
+
+    --primary: 40 65% 50%;
+    --primary-foreground: 30 15% 7%;
+
+    --secondary: 28 20% 18%;
+    --secondary-foreground: 38 30% 85%;
+
+    --muted: 28 12% 16%;
+    --muted-foreground: 30 15% 55%;
+
+    --accent: 40 65% 50%;
+    --accent-foreground: 30 15% 7%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 30 15% 20%;
+    --input: 30 15% 20%;
+    --ring: 40 65% 50%;
+
+    --radius: 0.75rem;
+
+    --cream: 38 40% 90%;
+    --coffee-light: 28 35% 35%;
+    --coffee-dark: 25 30% 15%;
+    --brass: 40 65% 50%;
+    --brass-glow: 42 80% 60%;
+    --success: 145 50% 42%;
+    --success-foreground: 145 50% 95%;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Playfair Display', serif;
+  }
+}
+
+@layer utilities {
+  .text-gradient-brass {
+    background: linear-gradient(135deg, hsl(40 65% 50%), hsl(42 80% 65%));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .bg-gradient-brass {
+    background: linear-gradient(135deg, hsl(40 65% 50%), hsl(42 80% 60%));
+  }
+
+  .bg-gradient-dark {
+    background: linear-gradient(180deg, hsl(30 15% 7%), hsl(25 20% 10%));
+  }
+
+  .glow-brass {
+    box-shadow: 0 0 30px hsl(40 65% 50% / 0.2), 0 0 60px hsl(40 65% 50% / 0.1);
+  }
+
+  .glass-card {
+    background: hsl(30 12% 12% / 0.8);
+    backdrop-filter: blur(20px);
+    border: 1px solid hsl(30 15% 20% / 0.5);
+  }
+}
