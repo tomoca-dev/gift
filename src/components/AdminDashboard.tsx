@@ -8,7 +8,6 @@ import AdminAnalytics from "@/components/AdminAnalytics";
 import AddCustomerDialog from "@/components/AddCustomerDialog";
 import ManageCashiers from "@/components/ManageCashiers";
 import ExportReports from "@/components/ExportReports";
-import AIImportDialog from "@/components/AIImportDialog";
 import SmartImportUI from "./admin/SmartImportUI";
 import CampaignManagementUI from "./admin/CampaignManagementUI";
 import ImportHistoryUI from "./admin/ImportHistoryUI";
@@ -28,7 +27,6 @@ const AdminDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("customers");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
 
   const fetchCustomers = async () => {
     const { data } = await supabase.from("reward_customers").select("*").order("created_at", { ascending: false });
@@ -99,7 +97,7 @@ const AdminDashboard = () => {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => setImportDialogOpen(true)}
+              onClick={() => setTab("import")}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary/80 backdrop-blur border border-border font-body text-sm text-foreground hover:bg-muted"
             >
               <Bot className="w-4 h-4" />
@@ -255,7 +253,6 @@ const AdminDashboard = () => {
       </div>
 
       <AddCustomerDialog open={addDialogOpen} onClose={() => setAddDialogOpen(false)} onAdded={fetchCustomers} />
-      <AIImportDialog open={importDialogOpen} onClose={() => setImportDialogOpen(false)} onImported={fetchCustomers} />
     </div>
   );
 };

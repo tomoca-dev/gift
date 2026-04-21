@@ -2,21 +2,21 @@ import { UploadCloud, CheckCircle, AlertCircle, RefreshCw, FileDown, Loader2, Sp
 import { useState, useRef, useEffect } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { analyzeImportFileData, extractUnstructuredData, type ImportAnalysisSelection } from "@/lib/gemini";
+import { discoverMappings, extractData, analyzeBulkRows, type ImportAnalysisSelection, type AIAnalyzedRow } from "@/lib/gemini";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import type { Database } from "@/integrations/supabase/types";
 
 type RecipientInsert = Database["public"]["Tables"]["gift_recipients"]["Insert"];
 
-interface ImportRow {
-  [key: string]: any;
-}
-
 interface ProcessedData {
-  valid: RecipientInsert[];
-  invalid: ImportRow[];
-  duplicates: ImportRow[];
+  rows: AIAnalyzedRow[];
+  counts: {
+    valid: number;
+    invalid: number;
+    duplicates: number;
+    suspicious: number;
+  };
 }
 
 export default function SmartImportUI() {
@@ -46,9 +46,11 @@ export default function SmartImportUI() {
   }, []);
 
   const downloadErrorFile = () => {
-    if (!processedData || processedData.invalid.length === 0) return;
+    if (!processedData) return;
+    const errors = processedData.rows.filter(r => r.status !== 'valid');
+    if (errors.length === 0) return;
     
-    const csv = Papa.unparse(processedData.invalid);
+    const csv = Papa.unparse(errors);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -60,27 +62,24 @@ export default function SmartImportUI() {
     document.body.removeChild(link);
   };
 
-  const handleEditRow = (index: number, field: keyof RecipientInsert, value: string) => {
+  const handleEditRow = (index: number, field: keyof AIAnalyzedRow, value: string) => {
     if (!processedData) return;
-    const newValid = [...processedData.valid];
-    newValid[index] = { ...newValid[index], [field]: value };
-    setProcessedData({ ...processedData, valid: newValid });
+    const newRows = [...processedData.rows];
+    newRows[index] = { ...newRows[index], [field]: value };
+    setProcessedData({ ...processedData, rows: newRows });
   };
 
   const handleTextImport = async () => {
     if (!pasteText.trim()) return;
     setLoading(true);
     setAnalyzing(true);
-    setAnalysis(null);
-    setProcessedData(null);
-
+    
     try {
-      const result = await extractUnstructuredData("text", pasteText);
+      const result = await extractData("text", pasteText);
       if (result?.extractedRows) {
-        processExtractedRows(result.extractedRows);
-        setAnalysis(result);
+        await processRows(result.extractedRows);
       } else {
-        toast({ title: "Analysis Failed", description: "Gemini couldn't extract data from that text.", variant: "destructive" });
+        toast({ title: "Analysis Failed", description: "Gemini couldn't extract data.", variant: "destructive" });
       }
     } catch (error) {
       console.error("Text extraction error:", error);
@@ -90,68 +89,41 @@ export default function SmartImportUI() {
     }
   };
 
-  const processExtractedRows = (rows: any[]) => {
-    const valid: RecipientInsert[] = [];
-    const invalid: any[] = [];
-    const duplicates: any[] = [];
-    const seenPhones = new Set<string>();
+  const processRows = async (rows: any[]) => {
+    setAnalyzing(true);
+    const aiResult = await analyzeBulkRows(rows);
+    setAnalyzing(false);
 
-    rows.forEach(row => {
-      const rawPhone = String(row.phone || "");
-      const cleanedPhone = rawPhone.replace(/[^0-9+]/g, "");
-      
-      let normalized = cleanedPhone;
-      if (cleanedPhone.startsWith("09")) normalized = "+2519" + cleanedPhone.substring(2);
-      else if (cleanedPhone.startsWith("9")) normalized = "+2519" + cleanedPhone.substring(1);
-      else if (cleanedPhone.startsWith("2519")) normalized = "+" + cleanedPhone;
+    if (aiResult) {
+      const counts = aiResult.rows.reduce((acc, r) => {
+        acc[r.status] = (acc[r.status] || 0) + 1;
+        return acc;
+      }, { valid: 0, invalid: 0, duplicates: 0, suspicious: 0 } as any);
 
-      const isValidReg = normalized.match(/^\+2519[0-9]{8}$/);
-      const giftType = row.gift_type || "Standard Gift";
-
-      if (!isValidReg) {
-        invalid.push(row);
-      } else if (seenPhones.has(normalized)) {
-        duplicates.push(row);
-      } else {
-        seenPhones.add(normalized);
-        valid.push({ 
-          phone_raw: rawPhone, 
-          phone_normalized: normalized, 
-          gift_type: String(giftType),
-          campaign_id: selectedCampaignId,
-          status: "eligible"
-        });
-      }
-    });
-
-    setProcessedData({ valid, invalid, duplicates });
+      setProcessedData({ rows: aiResult.rows, counts });
+    } else {
+      toast({ title: "Validation Error", description: "AI failed to validate rows.", variant: "destructive" });
+    }
   };
 
   const handleFile = async (file: File) => {
     setFileName(file.name);
     setLoading(true);
-    setAnalysis(null);
     setProcessedData(null);
-    setIsReviewOpen(false);
+    setAnalysis(null);
 
     try {
-      // Check for Image Import (OCR)
       if (file.type.startsWith('image/')) {
-          setImportMode("image");
-          setAnalyzing(true);
-          const reader = new FileReader();
-          reader.onloadend = async () => {
-              const base64String = (reader.result as string).split(',')[1];
-              const result = await extractUnstructuredData("image", base64String);
-              if (result?.extractedRows) {
-                  processExtractedRows(result.extractedRows);
-                  setAnalysis(result);
-              }
-              setLoading(false);
-              setAnalyzing(false);
-          };
-          reader.readAsDataURL(file);
-          return;
+        setImportMode("image");
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64 = (reader.result as string).split(',')[1];
+          const result = await extractData("image", base64);
+          if (result?.extractedRows) await processRows(result.extractedRows);
+          setLoading(false);
+        };
+        reader.readAsDataURL(file);
+        return;
       }
 
       let headers: string[] = [];
@@ -165,35 +137,28 @@ export default function SmartImportUI() {
       } else {
         const buffer = await file.arrayBuffer();
         const workbook = XLSX.read(buffer);
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        data = XLSX.utils.sheet_to_json(sheet);
-        if (data.length > 0) {
-          headers = Object.keys(data[0]);
-        }
+        data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        if (data.length > 0) headers = Object.keys(data[0]);
       }
 
       if (data.length === 0) {
-        toast({ title: "Empty file", description: "The uploaded file contains no data.", variant: "destructive" });
-        setLoading(false);
+        toast({ title: "Empty file", description: "No data found.", variant: "destructive" });
         return;
       }
 
       setAnalyzing(true);
-      const aiAnalysis = await analyzeImportFileData(headers, data.slice(0, 3));
-      setAnalysis(aiAnalysis);
-      setAnalyzing(false);
-
-      if (aiAnalysis) {
+      const mapping = await discoverMappings(headers, data.slice(0, 3));
+      setAnalysis(mapping);
+      
+      if (mapping) {
         const rowsToProcess = data.map(row => ({
-            phone: row[aiAnalysis.phoneColumn],
-            gift_type: aiAnalysis.rewardTypeColumn ? row[aiAnalysis.rewardTypeColumn] : aiAnalysis.suggestedRewardType
+          phone: row[mapping.phoneColumn],
+          reward_type: mapping.rewardTypeColumn ? row[mapping.rewardTypeColumn] : mapping.suggestedRewardType
         }));
-        processExtractedRows(rowsToProcess);
+        await processRows(rowsToProcess);
       }
-
     } catch (error) {
-      console.error("Error processing file:", error);
-      toast({ title: "Processing Error", description: "Failed to read the file.", variant: "destructive" });
+      console.error("File error:", error);
     } finally {
       setLoading(false);
       setAnalyzing(false);
@@ -201,65 +166,25 @@ export default function SmartImportUI() {
   };
 
   const handleImport = async () => {
-    if (!processedData || processedData.valid.length === 0) return;
+    if (!processedData) return;
+    const validRows = processedData.rows.filter(r => r.status === 'valid' || r.status === 'suspicious');
+    if (validRows.length === 0) return;
+
     setImporting(true);
-
     try {
-      // 1. Create a batch record
-      const { data: batch, error: batchErr } = await supabase
-        .from("import_batches")
-        .insert({
-          total_rows: processedData.valid.length + processedData.invalid.length + processedData.duplicates.length,
-          valid_rows: processedData.valid.length,
-          invalid_rows: processedData.invalid.length,
-          duplicate_rows: processedData.duplicates.length,
-          original_filename: fileName || "Manual Import"
-        })
-        .select()
-        .single();
-
-      if (batchErr) throw batchErr;
-
-      // 2. Prepare data with batch ID
-      const rowsToInsert: RecipientInsert[] = processedData.valid.map(r => ({ 
-        ...r, 
-        import_batch_id: batch.id 
-      }));
-      
-      // 3. Process in chunks (100 rows each)
-      const chunkSize = 100;
-      let successCount = 0;
-
-      for (let i = 0; i < rowsToInsert.length; i += chunkSize) {
-          const chunk = rowsToInsert.slice(i, i + chunkSize);
-          
-          // Use upsert with ignoreDuplicates to skip existing phone numbers in DB
-          const { error: insertErr } = await supabase
-            .from("gift_recipients")
-            .upsert(chunk, { 
-                onConflict: 'phone_normalized',
-                ignoreDuplicates: true 
-            });
-
-          if (insertErr) {
-              console.error(`Error inserting chunk ${i / chunkSize}:`, insertErr);
-              // We continue with other chunks even if one fails, but track error
-          } else {
-              successCount += chunk.length;
-          }
-      }
-
-      toast({ 
-          title: "Import Complete", 
-          description: `Processed ${rowsToInsert.length} rows. New recipients added (skipped existing).` 
+      const { data, error } = await supabase.functions.invoke("analyze-import", {
+        body: { 
+          action: "IMPORT", 
+          rows: validRows.map(r => ({ phone: r.normalizedPhone, reward_type: r.rewardType, phone_raw: r.rawPhone }))
+        }
       });
-      
+
+      if (error) throw error;
+      toast({ title: "Import Successful", description: `Imported ${data.imported} recipients.` });
       setProcessedData(null);
-      setAnalysis(null);
       setIsReviewOpen(false);
     } catch (error) {
-      console.error("Import error:", error);
-      toast({ title: "Import Failed", description: "An error occurred while saving the data.", variant: "destructive" });
+      toast({ title: "Import Failed", description: "Error saving data.", variant: "destructive" });
     } finally {
       setImporting(false);
     }
@@ -403,34 +328,41 @@ export default function SmartImportUI() {
 
            {!isReviewOpen ? (
              <>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-4 gap-4">
                   <div className="bg-success/10 border border-success/20 rounded-lg p-4">
                      <div className="flex items-center gap-2 mb-2">
                        <CheckCircle className="w-4 h-4 text-success" />
-                       <span className="font-semibold text-success font-body text-sm">Valid Rows</span>
+                       <span className="font-semibold text-success font-body text-sm">Valid</span>
                      </div>
-                     <p className="text-2xl font-bold text-foreground">{processedData.valid.length}</p>
+                     <p className="text-2xl font-bold text-foreground">{processedData.counts.valid}</p>
+                  </div>
+                  <div className="bg-primary/10 border border-primary/20 rounded-lg p-4">
+                     <div className="flex items-center gap-2 mb-2">
+                       <AlertCircle className="w-4 h-4 text-primary" />
+                       <span className="font-semibold text-primary font-body text-sm">Suspicious</span>
+                     </div>
+                     <p className="text-2xl font-bold text-foreground">{processedData.counts.suspicious}</p>
                   </div>
                   <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4">
                      <div className="flex items-center gap-2 mb-2">
                        <RefreshCw className="w-4 h-4 text-amber-500" />
                        <span className="font-semibold text-amber-500 font-body text-sm">Duplicates</span>
                      </div>
-                     <p className="text-2xl font-bold text-foreground">{processedData.duplicates.length}</p>
+                     <p className="text-2xl font-bold text-foreground">{processedData.counts.duplicates}</p>
                   </div>
                   <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
                      <div className="flex items-center gap-2 mb-2">
                        <AlertCircle className="w-4 h-4 text-destructive" />
                        <span className="font-semibold text-destructive font-body text-sm">Invalid</span>
                      </div>
-                     <p className="text-2xl font-bold text-foreground">{processedData.invalid.length}</p>
+                     <p className="text-2xl font-bold text-foreground">{processedData.counts.invalid}</p>
                   </div>
                 </div>
 
                 <div className="flex justify-between items-center pt-4">
                   <button 
                     onClick={downloadErrorFile}
-                    disabled={processedData.invalid.length === 0}
+                    disabled={processedData.counts.invalid === 0}
                     className="px-4 py-2 border border-border text-foreground hover:bg-secondary rounded-lg font-body text-sm flex items-center gap-2 disabled:opacity-50"
                   >
                     <FileDown className="w-4 h-4" />
@@ -455,41 +387,55 @@ export default function SmartImportUI() {
            ) : (
              <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-display font-semibold text-lg text-foreground">Review Cleaned Data</h3>
-                  <p className="text-xs text-muted-foreground font-body">Double click any cell to edit</p>
+                  <div className="flex flex-col">
+                    <h3 className="font-display font-semibold text-lg text-foreground">Review & Clean Data</h3>
+                    <p className="text-xs text-muted-foreground font-body">Double click any cell to edit. Suspicious rows are flagged by Gemini AI.</p>
+                  </div>
                 </div>
                 
                 <div className="border border-border rounded-lg overflow-hidden max-h-[400px] overflow-y-auto">
                   <table className="w-full text-left font-body text-sm">
                     <thead className="bg-secondary/50 sticky top-0">
                       <tr>
-                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">#</th>
-                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">Normalized Phone</th>
-                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">Gift Type</th>
-                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">Original Raw</th>
+                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">Status</th>
+                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">Phone (Target)</th>
+                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">Reward</th>
+                        <th className="px-4 py-2 border-b border-border text-muted-foreground font-medium">AI Reason/Note</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {processedData.valid.map((row, idx) => (
+                      {processedData.rows.map((row, idx) => (
                         <tr key={idx} className="hover:bg-secondary/20 transition-colors">
-                          <td className="px-4 py-2 border-b border-border text-muted-foreground">{idx + 1}</td>
+                          <td className="px-4 py-2 border-b border-border">
+                            <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                              row.status === "valid" ? "bg-success/10 text-success" :
+                              row.status === "suspicious" ? "bg-primary/10 text-primary" :
+                              row.status === "duplicate" ? "bg-amber-500/10 text-amber-500" :
+                              "bg-destructive/10 text-destructive"
+                            }`}>
+                              {row.status}
+                            </span>
+                          </td>
                           <td className="px-4 py-2 border-b border-border">
                             <input 
                               type="text" 
-                              value={row.phone_normalized}
-                              onChange={(e) => handleEditRow(idx, 'phone_normalized', e.target.value)}
+                              value={row.normalizedPhone}
+                              onChange={(e) => handleEditRow(idx, 'normalizedPhone', e.target.value)}
                               className="bg-transparent border-none focus:ring-1 focus:ring-primary rounded px-1 w-full"
                             />
                           </td>
                           <td className="px-4 py-2 border-b border-border">
                             <input 
                               type="text" 
-                              value={row.gift_type}
-                              onChange={(e) => handleEditRow(idx, 'gift_type', e.target.value)}
+                              value={row.rewardType}
+                              onChange={(e) => handleEditRow(idx, 'rewardType', e.target.value)}
                               className="bg-transparent border-none focus:ring-1 focus:ring-primary rounded px-1 w-full"
                             />
                           </td>
-                          <td className="px-4 py-2 border-b border-border text-muted-foreground truncate max-w-[150px]">{row.phone_raw}</td>
+                          <td className="px-4 py-2 border-b border-border text-[11px] leading-tight">
+                            <span className="text-foreground font-semibold">{row.reason}</span>
+                            {row.aiNote && <p className="text-primary mt-0.5">{row.aiNote}</p>}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -505,11 +451,11 @@ export default function SmartImportUI() {
                   </button>
                   <button 
                     onClick={handleImport}
-                    disabled={importing || processedData.valid.length === 0}
+                    disabled={importing || (processedData.counts.valid + processedData.counts.suspicious) === 0}
                     className="px-8 py-2 bg-gradient-brass text-primary-foreground rounded-lg font-body text-sm font-bold flex items-center gap-2 shadow-xl shadow-primary/20 transition-all active:scale-95"
                   >
                     {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                    {importing ? "Importing..." : `Finalize & Import ${processedData.valid.length} Rows`}
+                    {importing ? "Importing..." : `Finalize & Import ${processedData.counts.valid + processedData.counts.suspicious} Rows`}
                   </button>
                 </div>
              </div>
@@ -519,3 +465,4 @@ export default function SmartImportUI() {
     </div>
   );
 }
+
