@@ -1,3 +1,4 @@
+// v1.0.2 - Production Staff Login
 import { useState, lazy, Suspense } from "react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/hooks/useAuth";
