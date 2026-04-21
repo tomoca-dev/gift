@@ -49,7 +49,7 @@ serve(async (req: Request) => {
       });
     }
 
-    const { headers, sampleRows } = await req.json();
+    const { mode, headers, sampleRows, text, image } = await req.json();
     const apiKey = Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY');
 
     if (!apiKey) {
@@ -59,34 +59,70 @@ serve(async (req: Request) => {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-    const prompt = `
-      You are an expert data analyst. I have a dataset from a CSV/Excel file that I want to import into a reward system.
-      I need you to analyze the headers and sample rows to identify the best column for phone numbers and potentially a reward type.
+    let prompt = '';
+    let imagePart = null;
 
-      Headers: ${JSON.stringify(headers)}
-      Sample Data (first 3 rows): ${JSON.stringify(sampleRows)}
+    if (mode === 'text') {
+      prompt = `
+        You are an expert data extractor. I have a block of raw, unstructured text that contains a list of people and rewards.
+        I need you to extract every person, their phone number, and their gift/reward type.
+        
+        Text: """${text}"""
+        
+        Rules:
+        1. Extract phone numbers and normalize them (digits and + only).
+        2. Identify the coffee/gift type for each person if mentioned.
+        3. If no reward is mentioned, suggest a logical default (e.g., "Standard Coffee").
+        4. Return a JSON array of objects.
+        
+        Expected JSON: { "extractedRows": [{ "phone": "...", "gift_type": "...", "name": "..." }] }
+      `;
+    } else if (mode === 'image') {
+      imagePart = {
+        inlineData: {
+          data: image, // base64
+          mimeType: "image/jpeg"
+        }
+      };
+      prompt = `
+        You are an expert OCR and data analyst. This image is a photo or screenshot of a list of reward recipients.
+        Extract every phone number and gift type from this image.
+        
+        Rules:
+        1. Identify names, phone numbers, and gift types.
+        2. Normalize phone numbers.
+        3. Return a JSON array of objects.
+        
+        Expected JSON: { "extractedRows": [{ "phone": "...", "gift_type": "...", "name": "..." }] }
+      `;
+    } else {
+      // DEFAULT: Structured File (Column Mapping)
+      prompt = `
+        You are an expert data analyst. I have a dataset from a CSV/Excel file.
+        Analyze headers and sample rows to identify the best column for phone numbers and reward types.
 
-      Rules:
-      1. Look for a column that likely contains phone numbers (standard formats or just digits).
-      2. Look for a column that might indicate a reward type (e.g., "Free Macchiato", "Coffee", "Discount", etc.).
-      3. Return your analysis in JSON format ONLY.
+        Headers: ${JSON.stringify(headers)}
+        Sample Data: ${JSON.stringify(sampleRows)}
 
-      Expected JSON structure:
-      {
-        "phoneColumn": "name of the column with phone numbers",
-        "rewardTypeColumn": "name of the column with reward types (optional)",
-        "suggestedRewardType": "a default reward type if none found in columns",
-        "confidence": 0.0 to 1.0,
-        "reasoning": "brief explanation of why you chose these columns"
-      }
-    `;
+        Return JSON ONLY:
+        {
+          "phoneColumn": "...", 
+          "rewardTypeColumn": "...", 
+          "suggestedRewardType": "...",
+          "reasoning": "..."
+        }
+      `;
+    }
 
-    const result = await model.generateContent(prompt);
+    const result = imagePart 
+      ? await model.generateContent([prompt, imagePart])
+      : await model.generateContent(prompt);
+      
     const response = await result.response;
-    const text = response.text();
+    const responseText = response.text();
     
     // Extract JSON from the response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     const analysis = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
 
     if (!analysis) {

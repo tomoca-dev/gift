@@ -1,8 +1,8 @@
-import { UploadCloud, CheckCircle, AlertCircle, RefreshCw, FileDown, Loader2, Sparkles } from "lucide-react";
+import { UploadCloud, CheckCircle, AlertCircle, RefreshCw, FileDown, Loader2, Sparkles, FileText, Type, Image as ImageIcon, Send } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { analyzeImportFileData, type ImportAnalysisSelection } from "@/lib/gemini";
+import { analyzeImportFileData, extractUnstructuredData, type ImportAnalysisSelection } from "@/lib/gemini";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import type { Database } from "@/integrations/supabase/types";
@@ -30,6 +30,8 @@ export default function SmartImportUI() {
   const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [fileName, setFileName] = useState("");
+  const [importMode, setImportMode] = useState<"file" | "text" | "image">("file");
+  const [pasteText, setPasteText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -65,6 +67,66 @@ export default function SmartImportUI() {
     setProcessedData({ ...processedData, valid: newValid });
   };
 
+  const handleTextImport = async () => {
+    if (!pasteText.trim()) return;
+    setLoading(true);
+    setAnalyzing(true);
+    setAnalysis(null);
+    setProcessedData(null);
+
+    try {
+      const result = await extractUnstructuredData("text", pasteText);
+      if (result?.extractedRows) {
+        processExtractedRows(result.extractedRows);
+        setAnalysis(result);
+      } else {
+        toast({ title: "Analysis Failed", description: "Gemini couldn't extract data from that text.", variant: "destructive" });
+      }
+    } catch (error) {
+      console.error("Text extraction error:", error);
+    } finally {
+      setLoading(false);
+      setAnalyzing(false);
+    }
+  };
+
+  const processExtractedRows = (rows: any[]) => {
+    const valid: RecipientInsert[] = [];
+    const invalid: any[] = [];
+    const duplicates: any[] = [];
+    const seenPhones = new Set<string>();
+
+    rows.forEach(row => {
+      const rawPhone = String(row.phone || "");
+      const cleanedPhone = rawPhone.replace(/[^0-9+]/g, "");
+      
+      let normalized = cleanedPhone;
+      if (cleanedPhone.startsWith("09")) normalized = "+2519" + cleanedPhone.substring(2);
+      else if (cleanedPhone.startsWith("9")) normalized = "+2519" + cleanedPhone.substring(1);
+      else if (cleanedPhone.startsWith("2519")) normalized = "+" + cleanedPhone;
+
+      const isValidReg = normalized.match(/^\+2519[0-9]{8}$/);
+      const giftType = row.gift_type || "Standard Gift";
+
+      if (!isValidReg) {
+        invalid.push(row);
+      } else if (seenPhones.has(normalized)) {
+        duplicates.push(row);
+      } else {
+        seenPhones.add(normalized);
+        valid.push({ 
+          phone_raw: rawPhone, 
+          phone_normalized: normalized, 
+          gift_type: String(giftType),
+          campaign_id: selectedCampaignId,
+          status: "eligible"
+        });
+      }
+    });
+
+    setProcessedData({ valid, invalid, duplicates });
+  };
+
   const handleFile = async (file: File) => {
     setFileName(file.name);
     setLoading(true);
@@ -73,6 +135,25 @@ export default function SmartImportUI() {
     setIsReviewOpen(false);
 
     try {
+      // Check for Image Import (OCR)
+      if (file.type.startsWith('image/')) {
+          setImportMode("image");
+          setAnalyzing(true);
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+              const base64String = (reader.result as string).split(',')[1];
+              const result = await extractUnstructuredData("image", base64String);
+              if (result?.extractedRows) {
+                  processExtractedRows(result.extractedRows);
+                  setAnalysis(result);
+              }
+              setLoading(false);
+              setAnalyzing(false);
+          };
+          reader.readAsDataURL(file);
+          return;
+      }
+
       let headers: string[] = [];
       let data: any[] = [];
 
@@ -103,44 +184,11 @@ export default function SmartImportUI() {
       setAnalyzing(false);
 
       if (aiAnalysis) {
-        const valid: RecipientInsert[] = [];
-        const invalid: any[] = [];
-        const duplicates: any[] = [];
-        const seenPhones = new Set<string>();
-
-        const phoneCol = aiAnalysis.phoneColumn;
-        const rewardCol = aiAnalysis.rewardTypeColumn;
-        const defaultReward = aiAnalysis.suggestedRewardType || "Standard Gift";
-
-        data.forEach(row => {
-          const rawPhone = String(row[phoneCol] || "");
-          const cleanedPhone = rawPhone.replace(/[^0-9+]/g, "");
-          
-          let normalized = cleanedPhone;
-          if (cleanedPhone.startsWith("09")) normalized = "+2519" + cleanedPhone.substring(2);
-          else if (cleanedPhone.startsWith("9")) normalized = "+2519" + cleanedPhone.substring(1);
-          else if (cleanedPhone.startsWith("2519")) normalized = "+" + cleanedPhone;
-
-          const isValidReg = normalized.match(/^\+2519[0-9]{8}$/);
-          const giftType = (rewardCol ? row[rewardCol] : defaultReward) || defaultReward;
-
-          if (!isValidReg) {
-            invalid.push(row);
-          } else if (seenPhones.has(normalized)) {
-            duplicates.push(row);
-          } else {
-            seenPhones.add(normalized);
-            valid.push({ 
-              phone_raw: rawPhone, 
-              phone_normalized: normalized, 
-              gift_type: String(giftType),
-              campaign_id: selectedCampaignId,
-              status: "eligible"
-            });
-          }
-        });
-
-        setProcessedData({ valid, invalid, duplicates });
+        const rowsToProcess = data.map(row => ({
+            phone: row[aiAnalysis.phoneColumn],
+            gift_type: aiAnalysis.rewardTypeColumn ? row[aiAnalysis.rewardTypeColumn] : aiAnalysis.suggestedRewardType
+        }));
+        processExtractedRows(rowsToProcess);
       }
 
     } catch (error) {
@@ -245,41 +293,90 @@ export default function SmartImportUI() {
         </div>
       </div>
 
-      {!processedData ? (
-        <div 
-          className={`border-2 border-dashed rounded-xl p-10 flex flex-col items-center justify-center transition-all cursor-pointer ${
-            dragActive ? "border-primary bg-primary/5 scale-[1.02]" : "border-border hover:border-primary/50 hover:bg-secondary/20"
-          }`}
-          onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
-          onDragLeave={() => setDragActive(false)}
-          onDrop={(e) => { 
-            e.preventDefault(); 
-            setDragActive(false); 
-            if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
-          }}
-          onClick={() => fileInputRef.current?.click()}
+      <div className="flex bg-secondary/30 p-1 rounded-xl w-fit">
+        <button 
+          onClick={() => setImportMode("file")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-body transition-all ${importMode === "file" ? "bg-background shadow-sm text-primary font-bold" : "text-muted-foreground hover:text-foreground"}`}
         >
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} 
-            className="hidden" 
-            accept=".csv,.xlsx,.xls"
-          />
-          {loading ? (
-            <div className="flex flex-col items-center gap-3">
-              <Loader2 className="w-12 h-12 text-primary animate-spin" />
-              <p className="text-foreground font-body font-medium">{analyzing ? "Gemini AI is analyzing columns..." : "Processing file..."}</p>
+          <FileText className="w-4 h-4" />
+          File Upload
+        </button>
+        <button 
+          onClick={() => setImportMode("text")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-body transition-all ${importMode === "text" ? "bg-background shadow-sm text-primary font-bold" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          <Type className="w-4 h-4" />
+          Paste Text
+        </button>
+        <button 
+          onClick={() => setImportMode("image")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-body transition-all ${importMode === "image" ? "bg-background shadow-sm text-primary font-bold" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          <ImageIcon className="w-4 h-4" />
+          Scan Image
+        </button>
+      </div>
+
+      {!processedData ? (
+        <div className="space-y-4">
+          {importMode === "text" ? (
+            <div className="space-y-4 animate-in fade-in zoom-in-95 duration-300">
+              <textarea 
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                placeholder="Paste names, phone numbers, and gift types here... (e.g. Abebe 0911223344 Coffee)"
+                className="w-full h-48 bg-secondary/20 border border-border rounded-xl p-4 font-body text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all"
+              />
+              <button 
+                onClick={handleTextImport}
+                disabled={loading || !pasteText.trim()}
+                className="w-full py-4 bg-gradient-brass text-primary-foreground rounded-xl font-body font-bold flex items-center justify-center gap-3 shadow-lg shadow-primary/10 transition-all active:scale-95 disabled:opacity-50"
+              >
+                {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />}
+                {loading ? "Gemini is Extracting..." : "Smart Extract with Gemini AI"}
+              </button>
             </div>
           ) : (
-            <>
-              <UploadCloud className="w-12 h-12 text-muted-foreground mb-4" />
-              <p className="text-foreground font-body font-medium mb-1">Drag and drop your file here</p>
-              <p className="text-muted-foreground text-sm font-body mb-4">or click to browse CSV or Excel</p>
-              <button className="px-6 py-2 bg-gradient-brass text-primary-foreground rounded-lg font-body text-sm font-semibold transition-transform active:scale-95">
-                Select File
-              </button>
-            </>
+            <div 
+              className={`border-2 border-dashed rounded-xl p-10 flex flex-col items-center justify-center transition-all cursor-pointer ${
+                dragActive ? "border-primary bg-primary/5 scale-[1.02]" : "border-border hover:border-primary/50 hover:bg-secondary/20"
+              }`}
+              onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={(e) => { 
+                e.preventDefault(); 
+                setDragActive(false); 
+                if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+              }}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} 
+                className="hidden" 
+                accept={importMode === "file" ? ".csv,.xlsx,.xls" : "image/*"}
+              />
+              {loading ? (
+                <div className="flex flex-col items-center gap-3">
+                  <Loader2 className="w-12 h-12 text-primary animate-spin" />
+                  <p className="text-foreground font-body font-medium">{analyzing ? "Gemini AI is analyzing..." : "Processing..."}</p>
+                </div>
+              ) : (
+                <>
+                  {importMode === "image" ? <ImageIcon className="w-12 h-12 text-muted-foreground mb-4" /> : <UploadCloud className="w-12 h-12 text-muted-foreground mb-4" />}
+                  <p className="text-foreground font-body font-medium mb-1">
+                    {importMode === "image" ? "Upload image of your list" : "Drag and drop your file here"}
+                  </p>
+                  <p className="text-muted-foreground text-sm font-body mb-4">
+                    {importMode === "image" ? "We'll use Gemini to scan the text from your photo" : "or click to browse CSV or Excel"}
+                  </p>
+                  <button className="px-6 py-2 bg-gradient-brass text-primary-foreground rounded-lg font-body text-sm font-semibold transition-transform active:scale-95">
+                    {importMode === "image" ? "Select Image" : "Select File"}
+                  </button>
+                </>
+              )}
+            </div>
           )}
         </div>
       ) : (
