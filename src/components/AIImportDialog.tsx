@@ -102,14 +102,21 @@ const AIImportDialog = ({ open, onClose, onImported }: AIImportDialogProps) => {
     setLoading(false);
 
     if (error) {
-      toast.error(error.message || "AI import analysis failed.");
+      console.error("Gemini Analysis Error:", error);
+      toast.error(error.message || "AI import analysis failed. Check function logs.");
+      setPreview([]);
+      return;
+    }
+
+    if (!data?.rows) {
+      toast.error("AI returned no rows. Try a different file.");
       return;
     }
 
     setPreview(data.rows || []);
     setSummary(data.summary || "Analysis completed.");
     setGeminiUsed(Boolean(data.geminiUsed));
-    toast.success("Import analysis ready.");
+    toast.success("AI Analysis complete. Review the results below.");
   };
 
   const importValidRows = async () => {
