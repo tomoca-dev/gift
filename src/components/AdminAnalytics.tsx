@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import type { Tables } from "@/integrations/supabase/types";
 
-type RewardCustomer = Tables<"reward_customers">;
+type RewardCustomer = Tables<"gift_recipients">;
 
 interface AdminAnalyticsProps {
   customers: RewardCustomer[];
@@ -13,21 +13,21 @@ const COLORS = ["hsl(36, 60%, 50%)", "hsl(142, 60%, 45%)", "hsl(0, 0%, 45%)", "h
 
 const AdminAnalytics = ({ customers }: AdminAnalyticsProps) => {
   const statusData = useMemo(() => {
-    const counts = { pending: 0, redeemed: 0, expired: 0 };
+    const counts = { eligible: 0, claimed: 0, redeemed: 0 };
     customers.forEach(c => {
       if (c.status in counts) counts[c.status as keyof typeof counts]++;
     });
     return [
-      { name: "Available", value: counts.pending },
+      { name: "Available", value: counts.eligible },
+      { name: "Claimed", value: counts.claimed },
       { name: "Redeemed", value: counts.redeemed },
-      { name: "Expired", value: counts.expired },
     ];
   }, [customers]);
 
   const rewardTypeData = useMemo(() => {
     const map: Record<string, number> = {};
     customers.forEach(c => {
-      map[c.reward_type] = (map[c.reward_type] || 0) + 1;
+      map[c.gift_type] = (map[c.gift_type] || 0) + 1;
     });
     return Object.entries(map).map(([name, value]) => ({ name, value }));
   }, [customers]);

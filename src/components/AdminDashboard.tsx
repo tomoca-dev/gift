@@ -17,7 +17,7 @@ const FloatingBeansBackgroundLazy = lazy(() =>
   import("@/components/CoffeeScene").then((m) => ({ default: m.FloatingBeansBackground })),
 );
 
-type RewardCustomer = Tables<"reward_customers">;
+type RewardCustomer = Tables<"gift_recipients">;
 
 type Tab = "customers" | "campaigns" | "import" | "history" | "analytics" | "staff" | "audit";
 
@@ -29,7 +29,7 @@ const AdminDashboard = () => {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
 
   const fetchCustomers = async () => {
-    const { data } = await supabase.from("reward_customers").select("*").order("created_at", { ascending: false });
+    const { data } = await supabase.from("gift_recipients").select("*").order("created_at", { ascending: false });
     setCustomers(data || []);
     setLoading(false);
   };
@@ -38,7 +38,7 @@ const AdminDashboard = () => {
     fetchCustomers();
     const channel = supabase
       .channel("reward_customers_changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "reward_customers" }, () => {
+      .on("postgres_changes", { event: "*", schema: "public", table: "gift_recipients" }, () => {
         fetchCustomers();
       })
       .subscribe();
@@ -211,9 +211,9 @@ const AdminDashboard = () => {
                       transition={{ delay: 0.5 + i * 0.03 }}
                       className="group border-b border-border/50 hover:bg-secondary/30 transition-colors"
                     >
-                      <td className="px-5 py-3 font-body text-sm text-foreground">{c.phone}</td>
-                      <td className="px-5 py-3 font-body text-sm text-foreground">{c.reward_type}</td>
-                      <td className="px-5 py-3 font-body text-sm text-muted-foreground tracking-wider">{c.redemption_code}</td>
+                      <td className="px-5 py-3 font-body text-sm text-foreground">{c.phone_normalized}</td>
+                      <td className="px-5 py-3 font-body text-sm text-foreground">{c.gift_type}</td>
+                      <td className="px-5 py-3 font-body text-sm text-muted-foreground tracking-wider">{c.id.split("-")[0]}</td>
                       <td className="px-5 py-3">
                         <span
                           className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-body font-medium ${
@@ -227,13 +227,55 @@ const AdminDashboard = () => {
                           {c.status}
                         </span>
                       </td>
-                      <td className="px-5 py-3 font-body text-sm text-muted-foreground">{(c as any).claimed_at ? new Date((c as any).claimed_at).toLocaleString() : "—"}</td>
+                      <td className="px-5 py-3 font-body text-sm text-muted-foreground">{c.claimed_at ? new Date(c.claimed_at).toLocaleString() : "—"}</td>
                       <td className="px-5 py-3 font-body text-sm text-muted-foreground">{c.redeemed_at ? new Date(c.redeemed_at).toLocaleString() : "—"}</td>
                       <td className="px-5 py-3 text-right whitespace-nowrap">
                          <div className="flex justify-end gap-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
-                           <button className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 rounded text-xs font-semibold font-body transition-colors">Force Claim</button>
-                           <button className="px-2 py-1 bg-success/10 hover:bg-success/20 text-success rounded text-xs font-semibold font-body transition-colors">Redeem</button>
-                           <button className="px-2 py-1 bg-secondary hover:bg-secondary/80 text-muted-foreground rounded text-xs font-semibold font-body transition-colors">Reset</button>
+                           {c.status === "eligible" && (
+                             <button 
+                               onClick={async () => {
+                                 const { error } = await supabase
+                                   .from("gift_recipients")
+                                   .update({ status: "claimed", claimed_at: new Date().toISOString() })
+                                   .eq("id", c.id);
+                                 if (error) alert(error.message);
+                                 else fetchCustomers();
+                               }}
+                               className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 rounded text-xs font-semibold font-body transition-colors"
+                             >
+                               Force Claim
+                             </button>
+                           )}
+                           {c.status === "claimed" && (
+                             <button 
+                               onClick={async () => {
+                                 const { error } = await supabase
+                                   .from("gift_recipients")
+                                   .update({ status: "redeemed", redeemed_at: new Date().toISOString() })
+                                   .eq("id", c.id);
+                                 if (error) alert(error.message);
+                                 else fetchCustomers();
+                               }}
+                               className="px-2 py-1 bg-success/10 hover:bg-success/20 text-success rounded text-xs font-semibold font-body transition-colors"
+                             >
+                               Redeem
+                             </button>
+                           )}
+                           <button 
+                             onClick={async () => {
+                               if (confirm("Reset this recipient to eligible?")) {
+                                 const { error } = await supabase
+                                   .from("gift_recipients")
+                                   .update({ status: "eligible", claimed_at: null, redeemed_at: null })
+                                   .eq("id", c.id);
+                                 if (error) alert(error.message);
+                                 else fetchCustomers();
+                               }
+                             }}
+                             className="px-2 py-1 bg-secondary hover:bg-secondary/80 text-muted-foreground rounded text-xs font-semibold font-body transition-colors"
+                           >
+                             Reset
+                           </button>
                          </div>
                       </td>
                     </motion.tr>

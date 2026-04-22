@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { Download, FileSpreadsheet } from "lucide-react";
 import type { Tables } from "@/integrations/supabase/types";
 
-type RewardCustomer = Tables<"reward_customers">;
+type RewardCustomer = Tables<"gift_recipients">;
 
 interface ExportReportsProps {
   customers: RewardCustomer[];
@@ -10,14 +10,13 @@ interface ExportReportsProps {
 
 const ExportReports = ({ customers }: ExportReportsProps) => {
   const exportCSV = () => {
-    const headers = ["Phone", "Reward Type", "Status", "Code", "Redeemed At", "Store", "Created At"];
+    const headers = ["Phone", "Gift Type", "Status", "Claimed At", "Redeemed At", "Created At"];
     const rows = customers.map(c => [
-      c.phone,
-      c.reward_type,
+      c.phone_normalized,
+      c.gift_type,
       c.status,
-      c.redemption_code,
+      c.claimed_at ? new Date(c.claimed_at).toLocaleString() : "",
       c.redeemed_at ? new Date(c.redeemed_at).toLocaleString() : "",
-      c.store_name || "",
       new Date(c.created_at).toLocaleString(),
     ]);
 
@@ -33,12 +32,11 @@ const ExportReports = ({ customers }: ExportReportsProps) => {
 
   const exportJSON = () => {
     const data = customers.map(c => ({
-      phone: c.phone,
-      reward_type: c.reward_type,
+      phone: c.phone_normalized,
+      gift_type: c.gift_type,
       status: c.status,
-      redemption_code: c.redemption_code,
+      claimed_at: c.claimed_at,
       redeemed_at: c.redeemed_at,
-      store_name: c.store_name,
       created_at: c.created_at,
     }));
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
