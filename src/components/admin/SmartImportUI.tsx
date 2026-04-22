@@ -151,9 +151,11 @@ export default function SmartImportUI() {
       setAnalysis(mapping);
       
       if (mapping) {
-        const rowsToProcess = data.map(row => ({
-          phone: row[mapping.phoneColumn],
-          reward_type: mapping.rewardTypeColumn ? row[mapping.rewardTypeColumn] : mapping.suggestedRewardType
+        const rowsToProcess = data.map((row) => ({
+          rawPhone: row[mapping.phoneColumn],
+          gift_type: mapping.rewardTypeColumn
+            ? row[mapping.rewardTypeColumn]
+            : mapping.suggestedRewardType || "1 Free Coffee",
         }));
         await processRows(rowsToProcess);
       }
@@ -173,9 +175,20 @@ export default function SmartImportUI() {
     setImporting(true);
     try {
       const { data, error } = await supabase.functions.invoke("analyze-import", {
-        body: { 
-          action: "IMPORT", 
-          rows: validRows.map(r => ({ phone: r.normalizedPhone, reward_type: r.rewardType, phone_raw: r.rawPhone }))
+        body: {
+          action: "IMPORT",
+          campaignId: selectedCampaignId,
+          fileName,
+          sourceType: importMode,
+          summary: "Gemini-assisted import",
+          rows: validRows.map((r) => ({
+            rawPhone: r.rawPhone,
+            normalizedPhone: r.normalizedPhone,
+            giftType: r.rewardType,
+            status: r.status,
+            reason: r.reason,
+            aiNote: r.aiNote,
+          })),
         }
       });
 

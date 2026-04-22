@@ -1,138 +1,495 @@
 // @ts-nocheck
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { GoogleGenerativeAI } from "https://esm.sh/@google/generative-ai@0.21.0";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.7';
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.8";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+function normalizePhone(input: string | null | undefined): string {
+  if (!input) return "";
+  const cleaned = input.trim().replace(/[^0-9+]/g, "");
+
+  if (/^09\d{8}$/.test(cleaned)) return `+251${cleaned.slice(1)}`;
+  if (/^9\d{8}$/.test(cleaned)) return `+251${cleaned}`;
+  if (/^2519\d{8}$/.test(cleaned)) return `+${cleaned}`;
+  if (/^\+2519\d{8}$/.test(cleaned)) return cleaned;
+
+  return cleaned;
+}
+
+function extractPhoneFromText(input: string | null | undefined): string {
+  if (!input) return "";
+  const text = String(input);
+  const match = text.match(/(\+2519\d{8}|2519\d{8}|09\d{8}|9\d{8})/);
+  return match ? match[1] : "";
+}
+
+function extractNameFromCombinedCell(input: string | null | undefined): string {
+  if (!input) return "";
+  const text = String(input).trim();
+
+  if (text.includes(" - ")) {
+    const parts = text.split(" - ");
+    if (parts.length >= 2) return parts.slice(1).join(" - ").trim();
+  }
+
+  return text
+    .replace(/(\+2519\d{8}|2519\d{8}|09\d{8}|9\d{8})/g, "")
+    .replace(/^[-–—:\s]+|[-–—:\s]+$/g, "")
+    .trim();
+}
+
+function getRawPhoneValue(row: Record<string, unknown>): string {
+  const candidates = [
+    row.phone,
+    row.rawPhone,
+    row.phone_raw,
+    row["phone no"],
+    row.phone_no,
+    row.mobile,
+    row.number,
+    row.tel,
+    row.contact,
+    row.value,
+    row.text,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+
+  for (const value of Object.values(row)) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+
+  return "";
+}
+
+function getGiftTypeValue(row: Record<string, unknown>): string {
+  const candidates = [
+    row.gift_type,
+    row.giftType,
+    row.reward_type,
+    row.rewardType,
+    row.gift,
+    row.reward,
+    row.type,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+
+  return "1 Free Coffee";
+}
+
+function basicAnalyzeRows(rows: Record<string, unknown>[]) {
+  const seen = new Set<string>();
+
+  const analyzed = rows.map((row, index) => {
+    const rawCell = getRawPhoneValue(row);
+    const extractedPhone = extractPhoneFromText(rawCell);
+    const normalizedPhone = normalizePhone(extractedPhone);
+    const name = extractNameFromCombinedCell(rawCell);
+    const giftType = getGiftTypeValue(row);
+
+    let status: "valid" | "invalid" | "duplicate" | "suspicious" = "valid";
+    let reason = "Valid row";
+    let aiNote = name ? `Detected name: ${name}` : "";
+
+    if (!normalizedPhone || !/^\+2519\d{8}$/.test(normalizedPhone)) {
+      status = "invalid";
+      reason = "Invalid Ethiopian mobile number format";
+      aiNote = rawCell ? `Could not safely extract a valid phone from: ${rawCell}` : "Missing phone value";
+    } else if (seen.has(normalizedPhone)) {
+      status = "duplicate";
+      reason = "Duplicate inside uploaded batch";
+      aiNote = "This phone appears more than once in the uploaded file";
+    } else if (!giftType || !giftType.trim()) {
+      status = "suspicious";
+      reason = "Missing gift type";
+      aiNote = name ? `Phone extracted successfully. Name detected: ${name}` : "Phone extracted successfully";
+    } else if (rawCell && rawCell !== extractedPhone && rawCell !== normalizedPhone) {
+      status = "valid";
+      reason = "Phone extracted from combined text";
+      aiNote = name
+        ? `Extracted phone from mixed cell text. Detected name: ${name}`
+        : "Extracted phone from mixed cell text";
+    }
+
+    if (status !== "invalid") seen.add(normalizedPhone);
+
+    return {
+      index,
+      rawPhone: rawCell,
+      normalizedPhone,
+      rewardType: giftType,
+      giftType,
+      status,
+      reason,
+      aiNote,
+      name,
+    };
+  });
+
+  const counts = analyzed.reduce(
+    (acc, row) => {
+      acc[row.status] = (acc[row.status] || 0) + 1;
+      return acc;
+    },
+    { valid: 0, invalid: 0, duplicate: 0, suspicious: 0 } as Record<string, number>,
+  );
+
+  return {
+    rows: analyzed,
+    summary: `Processed ${rows.length} rows. Valid: ${counts.valid}, Invalid: ${counts.invalid}, Duplicate: ${counts.duplicate}, Suspicious: ${counts.suspicious}.`,
+    geminiUsed: false,
+  };
+}
+
+async function callGemini(prompt: string) {
+  const apiKey =
+    Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") ||
+    Deno.env.get("GEMINI_API_KEY");
+
+  if (!apiKey) throw new Error("Missing GOOGLE_GENERATIVE_AI_API_KEY or GEMINI_API_KEY");
+
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const modelName = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-flash";
+  const model = genAI.getGenerativeModel({ model: modelName });
+
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("Gemini did not return valid JSON");
+  return JSON.parse(match[0]);
+}
+
 serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) throw new Error('No authorization header');
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return json({ error: "Missing Authorization header" }, 401);
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+    if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
+      return json({ error: "Missing Supabase environment variables" }, 500);
+    }
+
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } },
     });
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) throw new Error('Unauthorized');
+    const {
+      action,
+      headers = [],
+      sampleRows = [],
+      text,
+      image,
+      rows = [],
+      mode,
+      campaignId = null,
+      fileName = "smart-import",
+      sourceType = "file",
+      summary = "Gemini-assisted import",
+    } = await req.json();
 
-    const { action, headers, sampleRows, text, image, rows, mode } = await req.json();
-    const apiKey = Deno.env.get('GOOGLE_GENERATIVE_AI_API_KEY');
-    if (!apiKey) throw new Error('GOOGLE_GENERATIVE_AI_API_KEY is not set');
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    if (userError || !user) return json({ error: "Unauthorized" }, 401);
 
-    // --- ACTION: DISCOVER (Header Mapping) ---
-    if (action === 'DISCOVER' || (mode === 'file' && headers)) {
-      const prompt = `
-        You are an expert data analyst. I have a dataset from a CSV/Excel file.
-        Analyze these headers and sample rows to identify the best column for phone numbers and reward types.
+    const { data: staffRow, error: staffError } = await supabase
+      .from("staff_profiles")
+      .select("role, active")
+      .eq("user_id", user.id)
+      .single();
 
-        Headers: ${JSON.stringify(headers)}
-        Sample Data: ${JSON.stringify(sampleRows)}
-
-        Return JSON ONLY:
-        {
-          "phoneColumn": "...", 
-          "rewardTypeColumn": "...", 
-          "suggestedRewardType": "...",
-          "reasoning": "...",
-          "confidence": 0.95
-        }
-      `;
-      const result = await model.generateContent(prompt);
-      const output = JSON.parse(result.response.text().match(/\{[\s\S]*\}/)?.[0] || '{}');
-      return new Response(JSON.stringify(output), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    if (staffError || !staffRow || staffRow.role !== "admin" || !staffRow.active) {
+      return json({ error: "Admin access required" }, 403);
     }
 
-    // --- ACTION: EXTRACT (Unstructured Text/Image) ---
-    if (action === 'EXTRACT' || mode === 'text' || mode === 'image') {
-      let prompt = '';
-      let parts = [];
+    if (action === "DISCOVER" || (mode === "file" && headers?.length)) {
+      const fallbackPhoneColumn =
+        headers.find((h: string) => /phone|mobile|tel|number|contact/i.test(h)) ||
+        headers[0] ||
+        "phone";
+      const fallbackGiftColumn = headers.find((h: string) => /gift|reward|type/i.test(h)) || null;
 
-      if (text || mode === 'text') {
-        prompt = `
-          Extract people and rewards from this unstructured text. 
-          Identify phone numbers (Ethiopian format), names, and gift types.
-          Rules: Normalize phone numbers to +251 format if possible.
-          Text: """${text}"""
-          Return JSON: { "extractedRows": [{ "phone": "...", "gift_type": "...", "name": "..." }] }
-        `;
-        parts.push(prompt);
-      } else if (image || mode === 'image') {
-        prompt = `
-          You are an expert OCR analyst. This image contains a list of reward recipients.
-          Extract every phone number (Ethiopian) and gift type.
-          Return JSON: { "extractedRows": [{ "phone": "...", "gift_type": "...", "name": "..." }] }
-        `;
-        parts.push(prompt);
-        parts.push({ inlineData: { data: image, mimeType: "image/jpeg" } });
+      try {
+        const aiResult = await callGemini(`
+You are analyzing spreadsheet headers for a one-time gift campaign in Ethiopia.
+
+Return strict JSON:
+{
+  "phoneColumn": string,
+  "rewardTypeColumn": string | null,
+  "suggestedRewardType": string | null,
+  "confidence": number,
+  "reasoning": string
+}
+
+Important:
+- Some files may have a single column such as "phone no"
+- A cell may look like "251911510367 - Misbah Ali Mohammed"
+- In that case, the single column still counts as the phone source column
+- If no gift column exists, suggest "1 Free Coffee"
+
+Headers:
+${JSON.stringify(headers)}
+
+Sample rows:
+${JSON.stringify(sampleRows)}
+        `);
+
+        return json({
+          phoneColumn: aiResult.phoneColumn || fallbackPhoneColumn,
+          rewardTypeColumn: aiResult.rewardTypeColumn ?? fallbackGiftColumn,
+          suggestedRewardType: aiResult.suggestedRewardType || "1 Free Coffee",
+          confidence: aiResult.confidence ?? 0.8,
+          reasoning: aiResult.reasoning || "Gemini mapping completed.",
+        });
+      } catch {
+        return json({
+          phoneColumn: fallbackPhoneColumn,
+          rewardTypeColumn: fallbackGiftColumn,
+          suggestedRewardType: "1 Free Coffee",
+          confidence: 0.75,
+          reasoning: "Fallback header detection used. Single-column phone/name files are supported.",
+        });
+      }
+    }
+
+    if (action === "EXTRACT" || mode === "text" || mode === "image") {
+      if (mode === "text" || text) {
+        try {
+          const aiResult = await callGemini(`
+Extract recipient rows from this text.
+
+Return strict JSON:
+{
+  "phoneColumn": "phone",
+  "rewardTypeColumn": "gift_type",
+  "suggestedRewardType": "1 Free Coffee",
+  "confidence": 0.95,
+  "reasoning": "short explanation",
+  "extractedRows": [
+    { "phone": "0911223344", "gift_type": "1 Free Coffee", "name": "Abebe" }
+  ]
+}
+
+Rules:
+- Ethiopian mobile numbers only
+- Normalize only if obvious
+- If no gift type is present, use "1 Free Coffee"
+- Text may contain lines like "251911510367 - Misbah Ali Mohammed"
+
+Text:
+${String(text || "").slice(0, 50000)}
+          `);
+
+          return json(aiResult);
+        } catch {
+          const lines = String(text || "")
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean);
+
+          const extractedRows = lines.map((line) => ({
+            phone: extractPhoneFromText(line),
+            gift_type: "1 Free Coffee",
+            name: extractNameFromCombinedCell(line),
+          }));
+
+          return json({
+            phoneColumn: "phone",
+            rewardTypeColumn: "gift_type",
+            suggestedRewardType: "1 Free Coffee",
+            confidence: 0.7,
+            reasoning: "Fallback text extraction used.",
+            extractedRows,
+          });
+        }
       }
 
-      const result = await model.generateContent(parts);
-      const output = JSON.parse(result.response.text().match(/\{[\s\S]*\}/)?.[0] || '{}');
-      return new Response(JSON.stringify(output), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
+      if (mode === "image" || image) {
+        try {
+          const apiKey =
+            Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || Deno.env.get("GEMINI_API_KEY");
+          if (!apiKey) throw new Error("Missing Gemini API key");
 
-    // --- ACTION: ANALYZE (Bulk Row Review & Validation) ---
-    if (action === 'ANALYZE' || action === 'analyze') {
-      const prompt = `
-        You are an expert data cleaner for Ethiopian mobile numbers and gift rewards.
-        Analyze the following data list.
-        Data: ${JSON.stringify(rows.slice(0, 50))} 
+          const genAI = new GoogleGenerativeAI(apiKey);
+          const modelName = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-flash";
+          const model = genAI.getGenerativeModel({ model: modelName });
 
-        Rules:
-        1. Normalize phone to +251XXXXXXXXX format. 
-        2. Flag "suspicious" if the number looks fake (999999999) or isn't Ethiopian.
-        3. Flag "duplicate" if it appears twice in the set.
-        4. "rewardType" should be a valid gift name.
+          const result = await model.generateContent([
+            `
+Extract recipient rows from this image.
 
-        Return JSON:
-        {
-          "rows": [{ "index", "rawPhone", "normalizedPhone", "rewardType", "status", "reason", "aiNote" }],
-          "summary": "...",
-          "geminiUsed": true
+Return strict JSON:
+{
+  "phoneColumn": "phone",
+  "rewardTypeColumn": "gift_type",
+  "suggestedRewardType": "1 Free Coffee",
+  "confidence": 0.95,
+  "reasoning": "short explanation",
+  "extractedRows": [
+    { "phone": "0911223344", "gift_type": "1 Free Coffee", "name": "Abebe" }
+  ]
+}
+
+Rules:
+- Ethiopian mobile numbers only
+- If no gift type is shown, use "1 Free Coffee"
+- Image may contain rows like "251911510367 - Misbah Ali Mohammed"
+            `,
+            {
+              inlineData: {
+                data: image,
+                mimeType: "image/jpeg",
+              },
+            },
+          ]);
+
+          const textOut = result.response.text();
+          const match = textOut.match(/\{[\s\S]*\}/);
+          if (!match) throw new Error("Gemini image extraction returned invalid JSON");
+          return json(JSON.parse(match[0]));
+        } catch (error) {
+          return json(
+            { error: error instanceof Error ? error.message : "Image extraction failed" },
+            400,
+          );
         }
-      `;
-      const result = await model.generateContent(prompt);
-      const output = JSON.parse(result.response.text().match(/\{[\s\S]*\}/)?.[0] || '{}');
-      return new Response(JSON.stringify(output), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
     }
 
-    // --- ACTION: IMPORT (Final DB Save) ---
-    if (action === 'IMPORT' || action === 'import') {
-      const supabaseAdmin = createClient(supabaseUrl, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
-      const { data: batch } = await supabaseAdmin.from('import_batches').insert({
-        uploaded_by: user.id,
-        total_rows: rows.length,
-        valid_rows: rows.length,
-      }).select().single();
+    if (action === "ANALYZE" || action === "analyze") {
+      const fallback = basicAnalyzeRows(Array.isArray(rows) ? rows : []);
 
-      const insertData = rows.map((r: any) => ({
-        phone_normalized: r.phone,
-        phone_raw: r.phone_raw || r.phone,
-        gift_type: r.reward_type || '1 Free Macchiato',
-        import_batch_id: batch?.id,
-        status: 'eligible'
-      }));
+      try {
+        const aiResult = await callGemini(`
+You are reviewing import rows for a one-time gift campaign.
 
-      const { data, error } = await supabaseAdmin.from('gift_recipients').upsert(insertData, { onConflict: 'phone_normalized' }).select();
-      if (error) throw error;
-      return new Response(JSON.stringify({ success: true, imported: data.length }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+Return strict JSON:
+{
+  "summary": string,
+  "rows": [
+    {
+      "index": number,
+      "status": "valid" | "invalid" | "duplicate" | "suspicious",
+      "reason": string,
+      "aiNote": string
+    }
+  ]
+}
+
+Important:
+- The normalized phone and duplicate detection from the input are already meaningful
+- Do not invent new phone numbers
+- Use "suspicious" only when needed
+- Some rows came from mixed text such as "251911510367 - Misbah Ali Mohammed"
+
+Input rows:
+${JSON.stringify(fallback.rows.slice(0, 500))}
+        `);
+
+        const map = new Map<number, any>();
+        for (const row of aiResult.rows || []) map.set(row.index, row);
+
+        const mergedRows = fallback.rows.map((row) => {
+          const ai = map.get(row.index);
+          if (!ai) return row;
+          const safeStatus = ["valid", "invalid", "duplicate", "suspicious"].includes(ai.status)
+            ? ai.status
+            : row.status;
+          return {
+            ...row,
+            status: safeStatus,
+            reason: ai.reason || row.reason,
+            aiNote: ai.aiNote || row.aiNote,
+          };
+        });
+
+        return json({
+          rows: mergedRows,
+          summary: aiResult.summary || fallback.summary,
+          geminiUsed: true,
+        });
+      } catch {
+        return json(fallback);
+      }
     }
 
-    throw new Error(`Unsupported action or mode: ${action || mode}`);
+    if (action === "IMPORT" || action === "import") {
+      const importRows = Array.isArray(rows) ? rows : [];
+      if (importRows.length === 0) return json({ error: "No rows provided for import" }, 400);
 
-  } catch (error: any) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      const { data: batchId, error: batchError } = await supabaseAdmin.rpc("create_import_batch", {
+        p_original_filename: fileName,
+        p_source_type: sourceType,
+        p_gemini_used: true,
+        p_gemini_summary: summary,
+      });
+      if (batchError) return json({ error: batchError.message }, 400);
+
+      for (let i = 0; i < importRows.length; i++) {
+        const row = importRows[i];
+        const rawPhone = row.rawPhone ?? row.phone_raw ?? row.phone ?? "";
+        const normalizedPhone =
+          row.normalizedPhone || normalizePhone(extractPhoneFromText(String(rawPhone)));
+        const giftType =
+          row.giftType ?? row.gift_type ?? row.rewardType ?? row.reward_type ?? "1 Free Coffee";
+        const status = row.status ?? "valid";
+        const reason = row.reason ?? null;
+        const aiNote = row.aiNote ?? null;
+
+        const { error: rowError } = await supabaseAdmin.rpc("add_import_batch_row", {
+          p_batch_id: batchId,
+          p_row_index: i,
+          p_raw_phone: String(rawPhone),
+          p_normalized_phone: normalizedPhone,
+          p_gift_type: giftType,
+          p_status: status,
+          p_reason: reason,
+          p_ai_note: aiNote,
+        });
+
+        if (rowError) {
+          return json({ error: `Failed adding batch row ${i}: ${rowError.message}` }, 400);
+        }
+      }
+
+      const { data: finalized, error: finalizeError } = await supabaseAdmin.rpc("finalize_import_batch", {
+        p_batch_id: batchId,
+        p_campaign_id: campaignId || null,
+      });
+      if (finalizeError) return json({ error: finalizeError.message }, 400);
+      return json(finalized);
+    }
+
+    return json({ error: `Unsupported action or mode: ${action || mode}` }, 400);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
   }
 });
