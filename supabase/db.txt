@@ -607,3 +607,179 @@ on conflict (name) do nothing;
 insert into public.gift_campaigns (name, active)
 values ('Tomoca One-Time Gift Campaign', true)
 on conflict do nothing;
+
+-- =========================================================
+-- 8) BATCH IMPORT SYSTEM (ENHANCED)
+-- =========================================================
+
+-- Add missing columns to import_batches
+alter table public.import_batches 
+add column if not exists source_type text,
+add column if not exists gemini_used boolean default false,
+add column if not exists gemini_summary text;
+
+-- Create import_batch_rows table
+create table if not exists public.import_batch_rows (
+  id uuid primary key default gen_random_uuid(),
+  batch_id uuid not null references public.import_batches(id) on delete cascade,
+  row_index integer not null,
+  raw_phone text,
+  normalized_phone text,
+  gift_type text,
+  status text check (status in ('valid', 'invalid', 'duplicate', 'suspicious')),
+  reason text,
+  ai_note text,
+  created_at timestamptz not null default now()
+);
+
+-- Index for faster batch retrieval
+create index if not exists idx_import_batch_rows_batch_id on public.import_batch_rows(batch_id);
+
+-- RPC: create_import_batch
+drop function if exists public.create_import_batch(text, text, boolean, text);
+create or replace function public.create_import_batch(
+  p_original_filename text,
+  p_source_type text,
+  p_gemini_used boolean default false,
+  p_gemini_summary text default null
+)
+returns uuid
+language plpgsql
+security definer
+as $$
+declare
+  v_batch_id uuid;
+begin
+  insert into public.import_batches (
+    uploaded_by,
+    original_filename,
+    source_type,
+    gemini_used,
+    gemini_summary
+  )
+  values (
+    auth.uid(),
+    p_original_filename,
+    p_source_type,
+    p_gemini_used,
+    p_gemini_summary
+  )
+  returning id into v_batch_id;
+
+  return v_batch_id;
+end;
+$$;
+
+-- RPC: add_import_batch_row
+drop function if exists public.add_import_batch_row(uuid, integer, text, text, text, text, text, text);
+create or replace function public.add_import_batch_row(
+  p_batch_id uuid,
+  p_row_index integer,
+  p_raw_phone text,
+  p_normalized_phone text,
+  p_gift_type text,
+  p_status text,
+  p_reason text,
+  p_ai_note text
+)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  insert into public.import_batch_rows (
+    batch_id,
+    row_index,
+    raw_phone,
+    normalized_phone,
+    gift_type,
+    status,
+    reason,
+    ai_note
+  )
+  values (
+    p_batch_id,
+    p_row_index,
+    p_raw_phone,
+    p_normalized_phone,
+    p_gift_type,
+    p_status,
+    p_reason,
+    p_ai_note
+  );
+end;
+$$;
+
+-- RPC: finalize_import_batch
+drop function if exists public.finalize_import_batch(uuid, uuid);
+create or replace function public.finalize_import_batch(
+  p_batch_id uuid,
+  p_campaign_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  v_imported integer := 0;
+  v_duplicates integer := 0;
+  v_errors integer := 0;
+  v_total integer := 0;
+  v_valid integer := 0;
+  v_invalid integer := 0;
+  v_suspicious integer := 0;
+  v_duplicate_count integer := 0;
+begin
+  -- 1) Extract stats from rows
+  select count(*) filter (where status = 'valid') into v_valid from public.import_batch_rows where batch_id = p_batch_id;
+  select count(*) filter (where status = 'invalid') into v_invalid from public.import_batch_rows where batch_id = p_batch_id;
+  select count(*) filter (where status = 'duplicate') into v_duplicate_count from public.import_batch_rows where batch_id = p_batch_id;
+  select count(*) filter (where status = 'suspicious') into v_suspicious from public.import_batch_rows where batch_id = p_batch_id;
+  select count(*) into v_total from public.import_batch_rows where batch_id = p_batch_id;
+
+  -- 2) Update the batch record
+  update public.import_batches
+  set total_rows = v_total,
+      valid_rows = v_valid,
+      invalid_rows = v_invalid,
+      duplicate_rows = v_duplicate_count,
+      suspicious_rows = v_suspicious
+  where id = p_batch_id;
+
+  -- 3) Move valid & suspicious rows to gift_recipients
+  -- We use "on conflict do nothing" to skip existing recipients globally
+  with inserted as (
+    insert into public.gift_recipients (
+      campaign_id,
+      import_batch_id,
+      phone_raw,
+      phone_normalized,
+      gift_type,
+      status
+    )
+    select 
+      p_campaign_id,
+      p_batch_id,
+      raw_phone,
+      normalized_phone,
+      gift_type,
+      'eligible'
+    from public.import_batch_rows
+    where batch_id = p_batch_id
+      and status in ('valid', 'suspicious')
+    on conflict (phone_normalized) do nothing
+    returning id
+  )
+  select count(*) into v_imported from inserted;
+
+  v_duplicates := (v_valid + v_suspicious) - v_imported;
+
+  return jsonb_build_object(
+    'batch_id', p_batch_id,
+    'total_processed', v_total,
+    'imported', v_imported,
+    'duplicates_skipped', v_duplicates,
+    'summary', format('Identified %s valid rows. Imported %s new recipients. %s were already in the system.', (v_valid + v_suspicious), v_imported, v_duplicates)
+  );
+end;
+$$;
