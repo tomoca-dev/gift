@@ -1,11 +1,12 @@
 // @ts-nocheck
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { GoogleGenerativeAI } from "https://esm.sh/@google/generative-ai@0.21.0";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.8";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
 function json(data: unknown, status = 200) {
@@ -168,7 +169,7 @@ async function callGemini(prompt: string) {
   if (!apiKey) throw new Error("Missing GOOGLE_GENERATIVE_AI_API_KEY or GEMINI_API_KEY");
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const modelName = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-flash";
+  const modelName = Deno.env.get("GEMINI_MODEL") || "gemini-2.0-flash";
   const model = genAI.getGenerativeModel({ model: modelName });
 
   const result = await model.generateContent(prompt);
@@ -179,7 +180,7 @@ async function callGemini(prompt: string) {
 }
 
 serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders, status: 200 });
 
   try {
     const authHeader = req.headers.get("Authorization");
@@ -339,7 +340,7 @@ ${String(text || "").slice(0, 50000)}
           if (!apiKey) throw new Error("Missing Gemini API key");
 
           const genAI = new GoogleGenerativeAI(apiKey);
-          const modelName = Deno.env.get("GEMINI_MODEL") || "gemini-1.5-flash";
+          const modelName = Deno.env.get("GEMINI_MODEL") || "gemini-2.0-flash";
           const model = genAI.getGenerativeModel({ model: modelName });
 
           const result = await model.generateContent([
