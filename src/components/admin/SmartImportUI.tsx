@@ -14,7 +14,7 @@ interface ProcessedData {
   counts: {
     valid: number;
     invalid: number;
-    duplicates: number;
+    duplicate: number;
     suspicious: number;
   };
 }
@@ -33,6 +33,53 @@ export default function SmartImportUI() {
   const [importMode, setImportMode] = useState<"file" | "text" | "image">("file");
   const [pasteText, setPasteText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+
+  const computeCounts = (rows: AIAnalyzedRow[]) => rows.reduce((acc, r) => {
+    acc[r.status] = (acc[r.status] || 0) + 1;
+    return acc;
+  }, { valid: 0, invalid: 0, duplicate: 0, suspicious: 0 } as any);
+
+  const inferRowsWithoutAI = (rows: any[]) => {
+    const seen = new Set<string>();
+    return rows.map((row, index) => {
+      const rawValue = String(row.rawPhone ?? row.phone ?? row.value ?? row.text ?? Object.values(row)[0] ?? "").trim();
+      const phoneMatch = rawValue.match(/(\+2519\d{8}|2519\d{8}|09\d{8}|9\d{8})/);
+      const extracted = phoneMatch ? phoneMatch[1] : rawValue;
+      const cleaned = String(extracted).replace(/[^0-9+]/g, "");
+      let normalized = cleaned;
+      if (/^09\d{8}$/.test(cleaned)) normalized = `+251${cleaned.slice(1)}`;
+      else if (/^9\d{8}$/.test(cleaned)) normalized = `+251${cleaned}`;
+      else if (/^2519\d{8}$/.test(cleaned)) normalized = `+${cleaned}`;
+      const rewardType = String(row.gift_type ?? row.giftType ?? row.rewardType ?? row.reward_type ?? "1 Free Coffee").trim() || "1 Free Coffee";
+      let status: AIAnalyzedRow["status"] = "valid";
+      let reason = "Fallback validation used";
+      if (!/^\+2519\d{8}$/.test(normalized)) {
+        status = "invalid";
+        reason = "Invalid Ethiopian mobile number format";
+      } else if (seen.has(normalized)) {
+        status = "duplicate";
+        reason = "Duplicate inside uploaded batch";
+      } else if (rawValue !== extracted) {
+        reason = "Phone extracted from mixed cell text";
+      }
+      if (status !== "invalid") seen.add(normalized);
+      return { index, rawPhone: rawValue, normalizedPhone: normalized, rewardType, status, reason, aiNote: "" } satisfies AIAnalyzedRow;
+    });
+  };
+
+  const parseDelimitedText = (text: string, delimiter: string) => {
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return { headers: [], data: [] as any[] };
+    const headers = lines[0].split(delimiter).map((h) => h.trim());
+    const data = lines.slice(1).map((line) => {
+      const values = line.split(delimiter);
+      const row: Record<string, string> = {};
+      headers.forEach((h, i) => row[h || `column_${i+1}`] = (values[i] || "").trim());
+      return row;
+    });
+    return { headers, data };
+  };
 
   useEffect(() => {
     const fetchCampaigns = async () => {
@@ -94,15 +141,12 @@ export default function SmartImportUI() {
     const aiResult = await analyzeBulkRows(rows);
     setAnalyzing(false);
 
-    if (aiResult) {
-      const counts = aiResult.rows.reduce((acc, r) => {
-        acc[r.status] = (acc[r.status] || 0) + 1;
-        return acc;
-      }, { valid: 0, invalid: 0, duplicates: 0, suspicious: 0 } as any);
+    const finalRows = aiResult?.rows ?? inferRowsWithoutAI(rows);
+    const counts = computeCounts(finalRows);
+    setProcessedData({ rows: finalRows, counts });
 
-      setProcessedData({ rows: aiResult.rows, counts });
-    } else {
-      toast({ title: "Validation Error", description: "AI failed to validate rows.", variant: "destructive" });
+    if (!aiResult) {
+      toast({ title: "Using fallback analysis", description: "The server analyzer was unavailable, so local validation was used." });
     }
   };
 
@@ -128,16 +172,39 @@ export default function SmartImportUI() {
 
       let headers: string[] = [];
       let data: any[] = [];
+      const lowerName = file.name.toLowerCase();
 
-      if (file.name.endsWith(".csv")) {
+      if (lowerName.endsWith(".csv")) {
         const text = await file.text();
         const result = Papa.parse(text, { header: true, skipEmptyLines: true });
-        data = result.data;
+        data = result.data as any[];
         headers = result.meta.fields || [];
+      } else if (lowerName.endsWith(".tsv")) {
+        const text = await file.text();
+        ({ headers, data } = parseDelimitedText(text, "	"));
+      } else if (lowerName.endsWith(".txt") || lowerName.endsWith(".json") || file.type.startsWith("text/")) {
+        const text = await file.text();
+        if (lowerName.endsWith(".json")) {
+          const parsed = JSON.parse(text);
+          data = Array.isArray(parsed) ? parsed : [parsed];
+          headers = data.length > 0 ? Object.keys(data[0]) : [];
+        } else {
+          const nonEmptyLines = text.split(/?
+/).map((l) => l.trim()).filter(Boolean);
+          const seemsDelimited = nonEmptyLines[0]?.includes(",") || nonEmptyLines[0]?.includes("	") || nonEmptyLines[0]?.includes(";");
+          if (seemsDelimited) {
+            const delimiter = nonEmptyLines[0].includes("	") ? "	" : (nonEmptyLines[0].includes(";") ? ";" : ",");
+            ({ headers, data } = parseDelimitedText(text, delimiter));
+          } else {
+            data = nonEmptyLines.map((line) => ({ rawPhone: line }));
+            headers = ["rawPhone"];
+          }
+        }
       } else {
         const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer);
-        data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        const workbook = XLSX.read(buffer, { type: "array" });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        data = XLSX.utils.sheet_to_json(firstSheet, { defval: "" }) as any[];
         if (data.length > 0) headers = Object.keys(data[0]);
       }
 
@@ -148,17 +215,22 @@ export default function SmartImportUI() {
 
       setAnalyzing(true);
       const mapping = await discoverMappings(headers, data.slice(0, 3));
-      setAnalysis(mapping);
-      
-      if (mapping) {
-        const rowsToProcess = data.map((row) => ({
-          rawPhone: row[mapping.phoneColumn],
-          gift_type: mapping.rewardTypeColumn
-            ? row[mapping.rewardTypeColumn]
-            : mapping.suggestedRewardType || "1 Free Coffee",
-        }));
-        await processRows(rowsToProcess);
-      }
+      const safeMapping = mapping || {
+        phoneColumn: headers.find((h) => /phone|mobile|tel|number|contact|no/i.test(h)) || headers[0] || "rawPhone",
+        rewardTypeColumn: headers.find((h) => /gift|reward|type/i.test(h)),
+        suggestedRewardType: "1 Free Coffee",
+        confidence: 0.5,
+        reasoning: "Fallback mapping used.",
+      };
+      setAnalysis(safeMapping as any);
+
+      const rowsToProcess = data.map((row) => ({
+        rawPhone: row[safeMapping.phoneColumn] ?? row.rawPhone ?? Object.values(row)[0],
+        gift_type: safeMapping.rewardTypeColumn
+          ? row[safeMapping.rewardTypeColumn]
+          : safeMapping.suggestedRewardType || "1 Free Coffee",
+      }));
+      await processRows(rowsToProcess);
     } catch (error) {
       console.error("File error:", error);
     } finally {
@@ -293,7 +365,7 @@ export default function SmartImportUI() {
                 ref={fileInputRef} 
                 onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} 
                 className="hidden" 
-                accept={importMode === "file" ? ".csv,.xlsx,.xls" : "image/*"}
+                accept={importMode === "file" ? ".csv,.tsv,.txt,.json,.xlsx,.xls,.xlsm,.xlsb,.ods,*/*" : "image/*"}
               />
               {loading ? (
                 <div className="flex flex-col items-center gap-3">
@@ -307,7 +379,7 @@ export default function SmartImportUI() {
                     {importMode === "image" ? "Upload image of your list" : "Drag and drop your file here"}
                   </p>
                   <p className="text-muted-foreground text-sm font-body mb-4">
-                    {importMode === "image" ? "We'll use Gemini to scan the text from your photo" : "or click to browse CSV or Excel"}
+                    {importMode === "image" ? "We'll use Gemini to scan the text from your photo" : "or click to browse CSV, Excel, TSV, TXT, JSON, or any tabular file"}
                   </p>
                   <button className="px-6 py-2 bg-gradient-brass text-primary-foreground rounded-lg font-body text-sm font-semibold transition-transform active:scale-95">
                     {importMode === "image" ? "Select Image" : "Select File"}
@@ -361,7 +433,7 @@ export default function SmartImportUI() {
                        <RefreshCw className="w-4 h-4 text-amber-500" />
                        <span className="font-semibold text-amber-500 font-body text-sm">Duplicates</span>
                      </div>
-                     <p className="text-2xl font-bold text-foreground">{processedData.counts.duplicates}</p>
+                     <p className="text-2xl font-bold text-foreground">{processedData.counts.duplicate}</p>
                   </div>
                   <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
                      <div className="flex items-center gap-2 mb-2">

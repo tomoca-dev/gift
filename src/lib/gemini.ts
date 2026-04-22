@@ -37,7 +37,16 @@ export const discoverMappings = async (headers: string[], sampleRows: any[]): Pr
     return data as ImportAnalysisSelection;
   } catch (error) {
     console.error("Discovery error:", error);
-    return null;
+    if (headers.length === 0) return null;
+    const phoneColumn = headers.find((h) => /phone|mobile|tel|number|contact|no/i.test(h)) || headers[0];
+    const rewardTypeColumn = headers.find((h) => /gift|reward|type/i.test(h));
+    return {
+      phoneColumn,
+      rewardTypeColumn,
+      suggestedRewardType: "1 Free Coffee",
+      confidence: 0.5,
+      reasoning: "Fallback mapping used because server discovery was unavailable.",
+    };
   }
 };
 
@@ -56,6 +65,22 @@ export const extractData = async (
     return data as ImportAnalysisSelection;
   } catch (error) {
     console.error("Extraction error:", error);
+    if (mode === "text") {
+      const extractedRows = content
+        .split(/?
+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => ({ phone: line, gift_type: "1 Free Coffee" }));
+      return {
+        phoneColumn: "phone",
+        rewardTypeColumn: "gift_type",
+        suggestedRewardType: "1 Free Coffee",
+        confidence: 0.5,
+        reasoning: "Fallback text extraction used because server extraction was unavailable.",
+        extractedRows,
+      };
+    }
     return null;
   }
 };

@@ -184,8 +184,6 @@ serve(async (req: Request) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return json({ error: "Missing Authorization header" }, 401);
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
     const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -194,11 +192,9 @@ serve(async (req: Request) => {
       return json({ error: "Missing Supabase environment variables" }, 500);
     }
 
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey);
 
+    const payload = await req.json();
     const {
       action,
       headers = [],
@@ -211,32 +207,43 @@ serve(async (req: Request) => {
       fileName = "smart-import",
       sourceType = "file",
       summary = "Gemini-assisted import",
-    } = await req.json();
+    } = payload;
 
-    const token = authHeader.replace(/^Bearer\s+/i, "");
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser(token);
+    const readOnlyActions = new Set(["DISCOVER", "EXTRACT", "ANALYZE", "analyze"]);
+    const requiresAdmin = !readOnlyActions.has(action);
 
-    if (userError || !user) {
-      console.error("Auth error:", userError);
-      return json({ error: "Unauthorized", details: userError?.message || "No user found" }, 401);
+    let user: any = null;
+    let staffRow: any = null;
+
+    if (authHeader) {
+      const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } },
+      });
+      const {
+        data: { user: sessionUser },
+      } = await supabase.auth.getUser();
+      user = sessionUser;
+
+      if (user) {
+        const { data } = await supabaseAdmin
+          .from("staff_profiles")
+          .select("role, active")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        staffRow = data;
+      }
     }
 
-    const { data: staffRow, error: staffError } = await supabase
-      .from("staff_profiles")
-      .select("role, active")
-      .eq("user_id", user.id)
-      .single();
-
-    if (staffError || !staffRow || staffRow.role !== "admin" || !staffRow.active) {
-      return json({ error: "Admin access required" }, 403);
+    if (requiresAdmin) {
+      if (!user) return json({ error: "Unauthorized" }, 401);
+      if (!staffRow || staffRow.role !== "admin" || !staffRow.active) {
+        return json({ error: "Admin access required" }, 403);
+      }
     }
 
     if (action === "DISCOVER" || (mode === "file" && headers?.length)) {
       const fallbackPhoneColumn =
-        headers.find((h: string) => /phone|mobile|tel|number|contact/i.test(h)) ||
+        headers.find((h: string) => /phone|mobile|tel|number|contact|no/i.test(h)) ||
         headers[0] ||
         "phone";
       const fallbackGiftColumn = headers.find((h: string) => /gift|reward|type/i.test(h)) || null;
@@ -312,11 +319,11 @@ Rules:
 Text:
 ${String(text || "").slice(0, 50000)}
           `);
-
           return json(aiResult);
         } catch {
           const lines = String(text || "")
-            .split(/\r?\n/)
+            .split(/?
+/)
             .map((l) => l.trim())
             .filter(Boolean);
 
@@ -339,10 +346,8 @@ ${String(text || "").slice(0, 50000)}
 
       if (mode === "image" || image) {
         try {
-          const apiKey =
-            Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || Deno.env.get("GEMINI_API_KEY");
+          const apiKey = Deno.env.get("GOOGLE_GENERATIVE_AI_API_KEY") || Deno.env.get("GEMINI_API_KEY");
           if (!apiKey) throw new Error("Missing Gemini API key");
-
           const genAI = new GoogleGenerativeAI(apiKey);
           const modelName = Deno.env.get("GEMINI_MODEL") || "gemini-2.0-flash";
           const model = genAI.getGenerativeModel({ model: modelName });
@@ -391,7 +396,6 @@ Rules:
 
     if (action === "ANALYZE" || action === "analyze") {
       const fallback = basicAnalyzeRows(Array.isArray(rows) ? rows : []);
-
       try {
         const aiResult = await callGemini(`
 You are reviewing import rows for a one-time gift campaign.
@@ -458,31 +462,22 @@ ${JSON.stringify(fallback.rows.slice(0, 500))}
       });
       if (batchError) return json({ error: batchError.message }, 400);
 
-      for (let i = 0; i < importRows.length; i++) {
-        const row = importRows[i];
-        const rawPhone = row.rawPhone ?? row.phone_raw ?? row.phone ?? "";
-        const normalizedPhone =
-          row.normalizedPhone || normalizePhone(extractPhoneFromText(String(rawPhone)));
-        const giftType =
-          row.giftType ?? row.gift_type ?? row.rewardType ?? row.reward_type ?? "1 Free Coffee";
-        const status = row.status ?? "valid";
-        const reason = row.reason ?? null;
-        const aiNote = row.aiNote ?? null;
+      const batchPayload = importRows.map((row, i) => ({
+        batch_id: batchId,
+        row_index: i,
+        raw_phone: String(row.rawPhone ?? row.phone_raw ?? row.phone ?? ""),
+        normalized_phone: row.normalizedPhone || normalizePhone(extractPhoneFromText(String(row.rawPhone ?? row.phone_raw ?? row.phone ?? ""))),
+        gift_type: row.giftType ?? row.gift_type ?? row.rewardType ?? row.reward_type ?? "1 Free Coffee",
+        status: row.status ?? "valid",
+        reason: row.reason ?? null,
+        ai_note: row.aiNote ?? null,
+      }));
 
-        const { error: rowError } = await supabaseAdmin.rpc("add_import_batch_row", {
-          p_batch_id: batchId,
-          p_row_index: i,
-          p_raw_phone: String(rawPhone),
-          p_normalized_phone: normalizedPhone,
-          p_gift_type: giftType,
-          p_status: status,
-          p_reason: reason,
-          p_ai_note: aiNote,
-        });
-
-        if (rowError) {
-          return json({ error: `Failed adding batch row ${i}: ${rowError.message}` }, 400);
-        }
+      const chunkSize = 1000;
+      for (let i = 0; i < batchPayload.length; i += chunkSize) {
+        const chunk = batchPayload.slice(i, i + chunkSize);
+        const { error: insertError } = await supabaseAdmin.from("import_batch_rows").insert(chunk);
+        if (insertError) return json({ error: `Failed adding import rows: ${insertError.message}` }, 400);
       }
 
       const { data: finalized, error: finalizeError } = await supabaseAdmin.rpc("finalize_import_batch", {
