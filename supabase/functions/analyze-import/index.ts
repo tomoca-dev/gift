@@ -213,12 +213,16 @@ serve(async (req: Request) => {
       summary = "Gemini-assisted import",
     } = await req.json();
 
+    const token = authHeader.replace(/^Bearer\s+/i, "");
     const {
       data: { user },
       error: userError,
-    } = await supabase.auth.getUser();
+    } = await supabase.auth.getUser(token);
 
-    if (userError || !user) return json({ error: "Unauthorized" }, 401);
+    if (userError || !user) {
+      console.error("Auth error:", userError);
+      return json({ error: "Unauthorized", details: userError?.message || "No user found" }, 401);
+    }
 
     const { data: staffRow, error: staffError } = await supabase
       .from("staff_profiles")
