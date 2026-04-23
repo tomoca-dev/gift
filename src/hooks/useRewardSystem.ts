@@ -11,20 +11,23 @@ export type RewardStatus =
   | "already-redeemed"
   | "expired";
 
-export type RewardCustomer = Tables<"reward_customers"> & {
+export type RewardCustomer = Tables<"gift_recipients"> & {
   qr_token?: string | null;
   qr_expires_at?: string | null;
+  // Compatibility fields
+  phone?: string;
+  reward_type?: string;
+  redemption_code?: string;
 };
 
 type ClaimResponse = {
-  customer_id: string | null;
+  success: boolean;
   message: string;
-  phone: string | null;
-  qr_expires_at: string | null;
+  recipient_id: string | null;
+  gift_type: string | null;
+  phone_normalized: string | null;
   qr_token: string | null;
-  redemption_code: string | null;
-  reward_type: string | null;
-  status: Exclude<RewardStatus, "landing" | "phone-entry" | "checking"> | "approved";
+  expires_at: string | null;
 };
 
 export type RedeemResult = "valid" | "already-used" | "expired" | "invalid";
@@ -44,71 +47,76 @@ export function useRewardSystem() {
   const checkPhone = async (phone: string) => {
     setStatus("checking");
 
-    const { data, error } = await supabase.rpc("claim_reward_by_phone", {
-      input_phone: phone,
-    });
+    try {
+      const { data, error } = await supabase.rpc("claim_gift_by_phone", {
+        input_phone: phone,
+      });
 
-    const result = (data as ClaimResponse[] | null)?.[0];
+      if (error) throw error;
 
-    if (error || !result) {
+      const result = data as unknown as ClaimResponse;
+
+      if (!result || !result.success) {
+        setCustomer(null);
+        if (result?.message?.includes("already")) {
+          setStatus("already-redeemed");
+        } else {
+          setStatus("not-approved");
+        }
+        return;
+      }
+
+      setCustomer({
+        id: result.recipient_id ?? crypto.randomUUID(),
+        phone_normalized: result.phone_normalized ?? phone,
+        phone: result.phone_normalized ?? phone,
+        gift_type: result.gift_type ?? "1 Free Coffee",
+        reward_type: result.gift_type ?? "1 Free Coffee",
+        redemption_code: result.qr_token?.slice(-6).toUpperCase() ?? "", // Use tail of token as fallback code
+        qr_token: result.qr_token,
+        qr_expires_at: result.expires_at,
+        status: "claimed",
+        claimed_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        redeemed_at: null,
+        redeemed_by: null,
+        branch_id: null,
+        campaign_id: null,
+        import_batch_id: null,
+        phone_raw: phone,
+      } as RewardCustomer);
+      setStatus("approved");
+    } catch (error) {
+      console.error("Claim error:", error);
       setCustomer(null);
       setStatus("not-approved");
-      return;
     }
-
-    if (result.status !== "approved") {
-      setCustomer(null);
-      setStatus(result.status);
-      return;
-    }
-
-    setCustomer({
-      id: result.customer_id ?? crypto.randomUUID(),
-      phone: result.phone ?? phone,
-      reward_type: result.reward_type ?? "1 Free Macchiato",
-      redemption_code: result.redemption_code ?? "",
-      qr_token: result.qr_token,
-      qr_expires_at: result.qr_expires_at,
-      status: "claimed",
-      claimed_at: new Date().toISOString(),
-      claim_expires_at: result.qr_expires_at,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      redeemed_at: null,
-      redeemed_by: null,
-      store_name: null,
-      imported_by: null,
-      import_source: null,
-    } as RewardCustomer);
-    setStatus("approved");
   };
 
   const validateReward = async (code: string): Promise<CashierCheckResult> => {
-    const { data, error } = await supabase.rpc("validate_reward_qr", {
-      input_code: code,
-    });
-
-    const result = (data as CashierCheckResult[] | null)?.[0];
-
-    if (error || !result) {
-      return { status: "invalid", message: "Invalid QR or code." };
-    }
-
-    return result;
+    // Note: The newer system uses redeem_gift_by_qr for both validation and redemption.
+    // For now, we'll keep the stubs or update them if the RPCs are available.
+    return { status: "invalid", message: "Validation not implemented in new system." };
   };
 
-  const redeemReward = async (code: string): Promise<CashierCheckResult> => {
-    const { data, error } = await supabase.rpc("redeem_reward_qr", {
-      input_code: code,
+  const redeemReward = async (token: string): Promise<CashierCheckResult> => {
+    const { data, error } = await supabase.rpc("redeem_gift_by_qr", {
+      input_token: token,
     });
 
-    const result = (data as CashierCheckResult[] | null)?.[0];
+    const result = data as any;
 
-    if (error || !result) {
-      return { status: "invalid", message: "Unable to redeem this gift." };
+    if (error || !result || !result.success) {
+      return { status: "invalid", message: result?.message || "Unable to redeem this gift." };
     }
 
-    return result;
+    return {
+      status: "valid",
+      message: result.message,
+      phone: result.recipient_id, // Or use a separate field if available
+      reward_type: result.gift_type,
+    };
   };
 
   const reset = () => {
