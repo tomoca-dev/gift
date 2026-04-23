@@ -22,6 +22,18 @@ const parseAnyFile = async (file: File): Promise<{ headers: string[]; data: any[
 
   if (mime.startsWith("image/")) return { headers: [], data: [] };
 
+  const spreadsheetExtensions = ["xlsx", "xls", "xlsm", "xlsb", "ods"];
+  const textLikeExtensions = ["csv", "tsv", "txt", "json"];
+
+  if (spreadsheetExtensions.includes(extension)) {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(sheet, { defval: "" }) as any[];
+    return { headers: data.length ? Object.keys(data[0]) : [], data };
+  }
+
   const text = await file.text();
   const nonEmptyLines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
@@ -31,21 +43,20 @@ const parseAnyFile = async (file: File): Promise<{ headers: string[]; data: any[
     return { headers: data.length ? Object.keys(data[0]) : [], data };
   }
 
-  const seemsDelimited = !!nonEmptyLines[0] && (nonEmptyLines[0].includes(",") || nonEmptyLines[0].includes("\t") || nonEmptyLines[0].includes(";"));
-  if (["csv", "tsv", "txt"].includes(extension) || mime.startsWith("text/") || seemsDelimited) {
-    const delimiter = nonEmptyLines[0]?.includes("\t") ? "\t" : (nonEmptyLines[0]?.includes(";") && !nonEmptyLines[0]?.includes(",") ? ";" : ",");
+  const firstLine = nonEmptyLines[0] || "";
+  const seemsDelimited = firstLine.includes(",") || firstLine.includes("	") || firstLine.includes(";") || firstLine.includes("|");
+  if (textLikeExtensions.includes(extension) || mime.startsWith("text/") || seemsDelimited) {
+    const delimiter = firstLine.includes("	")
+      ? "	"
+      : firstLine.includes(";") && !firstLine.includes(",")
+        ? ";"
+        : firstLine.includes("|") && !firstLine.includes(",")
+          ? "|"
+          : ",";
     const result = Papa.parse(text, { header: true, skipEmptyLines: true, delimiter });
     const data = Array.isArray(result.data) ? (result.data as any[]) : [];
     const headers = result.meta.fields || (data.length ? Object.keys(data[0]) : []);
-    if (data.length) return { headers, data };
-  }
-
-  if (["xlsx", "xls", "xlsm", "xlsb", "ods"].includes(extension)) {
-    const buffer = await file.arrayBuffer();
-    const workbook = XLSX.read(buffer, { type: "array" });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(sheet, { defval: "" }) as any[];
-    return { headers: data.length ? Object.keys(data[0]) : [], data };
+    if (data.length && headers.length) return { headers, data };
   }
 
   return { headers: ["value"], data: nonEmptyLines.map((line) => ({ value: line })) };
@@ -190,7 +201,7 @@ export default function SmartImportUI() {
           rows: validRows.map((r) => ({
             rawPhone: r.rawPhone,
             normalizedPhone: r.normalizedPhone,
-            giftType: r.rewardType,
+            giftType: r.rewardType || "1 Free Coffee",
             status: r.status,
             reason: r.reason,
             aiNote: r.aiNote,

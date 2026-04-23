@@ -154,8 +154,7 @@ serve(async (req: Request) => {
           const aiResult = await callGemini(`Extract recipient rows from this text. Return strict JSON: {"phoneColumn":"phone","rewardTypeColumn":"gift_type","suggestedRewardType":"1 Free Coffee","confidence":0.95,"reasoning":"short explanation","extractedRows":[{"phone":"0911223344","gift_type":"1 Free Coffee","name":"Abebe"}]}. Rules: Ethiopian mobile numbers only. Text may contain lines like "251911510367 - Misbah Ali Mohammed". Text: ${String(text || "").slice(0, 50000)}`);
           return json(aiResult);
         } catch {
-          const lines = String(text || "").split(/?
-/).map((l) => l.trim()).filter(Boolean);
+          const lines = String(text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
           return json({ phoneColumn: "phone", rewardTypeColumn: "gift_type", suggestedRewardType: "1 Free Coffee", confidence: 0.7, reasoning: "Fallback text extraction used.", extractedRows: lines.map((line) => ({ phone: extractPhoneFromText(line), gift_type: "1 Free Coffee", name: extractNameFromCombinedCell(line) })) });
         }
       }

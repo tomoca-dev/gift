@@ -24,7 +24,7 @@ export default function ImportHistoryUI() {
       .select("*")
       .order("created_at", { ascending: false });
 
-    if (!error) setHistory(data || []);
+    if (!error) setHistory((data as unknown as ImportBatch[]) || []);
     setLoading(false);
   };
 
