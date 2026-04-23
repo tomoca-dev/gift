@@ -54,14 +54,18 @@ export function useRewardSystem() {
 
       if (error) throw error;
 
-      const result = data as unknown as ClaimResponse;
+      // Handle both array and single object responses
+      const result = Array.isArray(data) ? (data[0] as unknown as ClaimResponse) : (data as unknown as ClaimResponse);
 
       if (!result || !result.success) {
         setCustomer(null);
-        if (result?.message?.includes("already")) {
+        const msg = result?.message || "Not eligible";
+        if (msg.toLowerCase().includes("already")) {
           setStatus("already-redeemed");
         } else {
+          // Show actual message if available
           setStatus("not-approved");
+          console.warn("Claim rejected:", msg);
         }
         return;
       }
