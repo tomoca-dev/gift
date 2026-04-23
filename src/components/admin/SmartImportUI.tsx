@@ -211,9 +211,14 @@ export default function SmartImportUI() {
       if (error) throw error;
       toast({ title: "Import Successful", description: `Imported ${data.imported} recipients.` });
       setProcessedData(null);
-    } catch (error) {
-      console.error("Import error:", error);
-      toast({ title: "Import Failed", description: "Error saving data. Make sure you are logged in as admin.", variant: "destructive" });
+    } catch (error: any) {
+      console.error("Import error details:", error);
+      const errorMessage = error?.message || (typeof error === 'string' ? error : "Unknown error saving data.");
+      toast({ 
+        title: "Import Failed", 
+        description: `Error: ${errorMessage}. Make sure you are logged in as admin and functions are deployed.`, 
+        variant: "destructive" 
+      });
     } finally {
       setImporting(false);
     }
