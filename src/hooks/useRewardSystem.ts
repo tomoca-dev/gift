@@ -88,17 +88,14 @@ export function useRewardSystem() {
 
       if (error) throw error;
 
-      // RPC returns an array
-      const rows = data as ClaimRpcRow[] | null;
-      const result = Array.isArray(rows) ? rows[0] : null;
-
+      // Now expecting a single object (JSONB)
+      const result = data as any;
       const claimStatus = (result?.status || "").toLowerCase().replace(/_/g, "-");
       const claimSucceeded = ["approved", "valid", "success"].includes(claimStatus);
 
       if (!result || !claimSucceeded) {
         setCustomer(null);
         const msg = result?.message ?? "Not eligible";
-        console.warn("Claim rejected by database:", { msg, status: claimStatus, result });
         
         if (msg.toLowerCase().includes("already") || claimStatus === "already-redeemed" || claimStatus === "already-used") {
           setStatus("already-redeemed");
@@ -106,8 +103,6 @@ export function useRewardSystem() {
           setStatus("expired");
         } else {
           setStatus("not-approved");
-          // We'll pass the message through to the UI via a toast if needed, 
-          // or just rely on the StatusScreen which shows a generic message.
         }
         return;
       }
