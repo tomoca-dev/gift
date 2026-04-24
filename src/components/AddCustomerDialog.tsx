@@ -39,9 +39,9 @@ const AddCustomerDialog = ({ open, onClose, onAdded }: AddCustomerDialogProps) =
     setLoading(true);
     const reward = useCustom ? customReward : rewardType;
 
-    const { error } = await supabase.from("reward_customers").upsert(
-      { phone: normalized, reward_type: reward, status: "eligible" },
-      { onConflict: "phone" },
+    const { error } = await supabase.from("gift_recipients").upsert(
+      { phone_raw: phone, phone_normalized: normalized, gift_type: reward, status: "eligible" },
+      { onConflict: "phone_normalized" },
     );
 
     setLoading(false);

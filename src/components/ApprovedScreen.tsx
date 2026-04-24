@@ -36,7 +36,7 @@ const ApprovedScreen = ({ customer }: ApprovedScreenProps) => {
   }, [customer.qr_expires_at]);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(customer.redemption_code);
+    navigator.clipboard.writeText(customer.redemption_code || "");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

@@ -66,10 +66,11 @@ export type CashierCheckResult = {
 };
 
 function mapStatusToRedeemResult(status: string, message: string): RedeemResult {
-  if (status === "valid" || status === "success") return "valid";
-  const msg = message.toLowerCase();
-  if (msg.includes("already") || status === "already_redeemed") return "already-used";
-  if (msg.includes("expir") || status === "expired") return "expired";
+  const normalized = (status || "").toLowerCase().replace(/_/g, "-");
+  if (normalized === "valid" || normalized === "success" || normalized === "approved") return "valid";
+  const msg = (message || "").toLowerCase();
+  if (msg.includes("already") || normalized === "already-redeemed" || normalized === "already-used") return "already-used";
+  if (msg.includes("expir") || normalized === "expired") return "expired";
   return "invalid";
 }
 
@@ -91,12 +92,15 @@ export function useRewardSystem() {
       const rows = data as ClaimRpcRow[] | null;
       const result = Array.isArray(rows) ? rows[0] : null;
 
-      if (!result || result.status !== "valid") {
+      const claimStatus = (result?.status || "").toLowerCase().replace(/_/g, "-");
+      const claimSucceeded = ["approved", "valid", "success"].includes(claimStatus);
+
+      if (!result || !claimSucceeded) {
         setCustomer(null);
         const msg = result?.message ?? "Not eligible";
-        if (msg.toLowerCase().includes("already") || result?.status === "already_redeemed") {
+        if (msg.toLowerCase().includes("already") || claimStatus === "already-redeemed" || claimStatus === "already-used") {
           setStatus("already-redeemed");
-        } else if (msg.toLowerCase().includes("expir") || result?.status === "expired") {
+        } else if (msg.toLowerCase().includes("expir") || claimStatus === "expired") {
           setStatus("expired");
         } else {
           setStatus("not-approved");
@@ -111,7 +115,7 @@ export function useRewardSystem() {
         phone: result.phone ?? phone,
         gift_type: result.reward_type ?? "1 Free Coffee",
         reward_type: result.reward_type ?? "1 Free Coffee",
-        redemption_code: result.redemption_code ?? result.qr_token?.slice(-6).toUpperCase() ?? "",
+        redemption_code: result.redemption_code ?? result.qr_token?.slice(-8).toUpperCase() ?? "",
         qr_token: result.qr_token,
         qr_expires_at: result.qr_expires_at,
         status: "claimed",
