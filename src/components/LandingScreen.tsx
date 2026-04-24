@@ -1,8 +1,13 @@
 import { motion } from "framer-motion";
-import { LogIn } from "lucide-react";
+import { LogIn, Download } from "lucide-react";
 import logo from "@/assets/logo.png";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+  readonly userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+}
 
 const CoffeeScene = lazy(() => import("@/components/CoffeeScene"));
 
@@ -12,6 +17,23 @@ interface LandingScreenProps {
 
 const LandingScreen = ({ onStart }: LandingScreenProps) => {
   const navigate = useNavigate();
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e as BeforeInstallPromptEvent);
+    };
+    window.addEventListener("beforeinstallprompt", handler);
+    return () => window.removeEventListener("beforeinstallprompt", handler);
+  }, []);
+
+  const handleInstall = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    setDeferredPrompt(null);
+  };
 
   return (
     <div className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden bg-gradient-dark">
@@ -89,6 +111,21 @@ const LandingScreen = ({ onStart }: LandingScreenProps) => {
         >
           Enter Your Number
         </motion.button>
+
+        {deferredPrompt && (
+          <motion.button
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 1.0 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            onClick={handleInstall}
+            className="flex items-center gap-2 mt-4 px-6 py-2.5 rounded-xl border border-border/60 bg-secondary/30 backdrop-blur text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-all font-body text-sm"
+          >
+            <Download className="w-4 h-4" />
+            Install App
+          </motion.button>
+        )}
 
         <motion.p
           initial={{ opacity: 0 }}

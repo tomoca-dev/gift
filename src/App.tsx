@@ -9,7 +9,6 @@ import Cashier from "./pages/Cashier";
 import Admin from "./pages/Admin";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
-import { InstallPWA } from "./components/InstallPWA";
 
 const queryClient = new QueryClient();
 
@@ -20,7 +19,6 @@ const App = () => (
       <Sonner />
       <AuthProvider>
         <BrowserRouter>
-          <InstallPWA />
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/login" element={<Login />} />
