@@ -5,10 +5,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { maskPhone } from "@/lib/phone";
 import type { Tables } from "@/integrations/supabase/types";
 
-type RewardCustomer = Tables<"reward_customers">;
+type GiftRecipient = Tables<"gift_recipients">;
 
 const RedemptionHistory = () => {
-  const [records, setRecords] = useState<RewardCustomer[]>([]);
+  const [records, setRecords] = useState<GiftRecipient[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -17,7 +17,7 @@ const RedemptionHistory = () => {
       today.setHours(0, 0, 0, 0);
 
       const { data } = await supabase
-        .from("reward_customers")
+        .from("gift_recipients")
         .select("*")
         .eq("status", "redeemed")
         .gte("redeemed_at", today.toISOString())
@@ -30,7 +30,7 @@ const RedemptionHistory = () => {
 
     const channel = supabase
       .channel("cashier_history")
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "reward_customers" }, () => {
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "gift_recipients" }, () => {
         fetch();
       })
       .subscribe();
@@ -74,8 +74,10 @@ const RedemptionHistory = () => {
               className="glass-card rounded-lg p-3 flex items-center justify-between"
             >
               <div>
-                <p className="font-body text-sm text-foreground">{r.phone ? maskPhone(r.phone) : "—"}</p>
-                <p className="font-body text-xs text-muted-foreground">{r.reward_type}</p>
+                <p className="font-body text-sm text-foreground">
+                  {r.phone_normalized ? maskPhone(r.phone_normalized) : "—"}
+                </p>
+                <p className="font-body text-xs text-muted-foreground">{r.gift_type}</p>
               </div>
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-success" />

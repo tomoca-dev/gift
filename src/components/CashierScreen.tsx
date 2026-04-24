@@ -43,12 +43,12 @@ const CashierScreen = ({ onValidate, onRedeem }: CashierScreenProps) => {
 
       const [{ count: scansCount }, { count: redeemedCount }] = await Promise.all([
         supabase
-          .from("reward_customers")
+          .from("gift_recipients")
           .select("id", { count: "exact", head: true })
           .in("status", ["claimed", "redeemed"])
-          .gte("created_at", todayIso),
+          .gte("claimed_at", todayIso),
         supabase
-          .from("reward_customers")
+          .from("gift_recipients")
           .select("id", { count: "exact", head: true })
           .eq("status", "redeemed")
           .gte("redeemed_at", todayIso),
@@ -66,7 +66,7 @@ const CashierScreen = ({ onValidate, onRedeem }: CashierScreenProps) => {
     // Refresh stats in real-time on any DB update
     const channel = supabase
       .channel("cashier_stats")
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "reward_customers" }, fetchStats)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "gift_recipients" }, fetchStats)
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
