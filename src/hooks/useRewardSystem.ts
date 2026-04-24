@@ -87,8 +87,9 @@ export function useRewardSystem() {
 
       if (error) throw error;
 
-      // RPC might return an array or a single object depending on Supabase version
-      const result = Array.isArray(data) ? data[0] : data;
+      // RPC returns an array
+      const rows = data as ClaimRpcRow[] | null;
+      const result = Array.isArray(rows) ? rows[0] : null;
 
       if (!result || result.status !== "valid") {
         setCustomer(null);
@@ -142,7 +143,8 @@ export function useRewardSystem() {
         return { status: "invalid", message: error.message };
       }
 
-      const result = Array.isArray(data) ? data[0] : data;
+      const rows = data as ValidateRpcRow[] | null;
+      const result = Array.isArray(rows) ? rows[0] : null;
 
       if (!result) {
         return { status: "invalid", message: "QR code not found." };
@@ -174,7 +176,8 @@ export function useRewardSystem() {
         return { status: "invalid", message: error.message };
       }
 
-      const result = Array.isArray(data) ? data[0] : data;
+      const rows = data as RedeemRpcRow[] | null;
+      const result = Array.isArray(rows) ? rows[0] : null;
 
       if (!result) {
         return { status: "invalid", message: "Unable to redeem this gift." };

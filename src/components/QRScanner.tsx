@@ -17,16 +17,8 @@ const QRScanner = ({ onScan }: QRScannerProps) => {
     try {
       const scanner = new Html5Qrcode("qr-reader");
       scannerRef.current = scanner;
-      const devices = await Html5Qrcode.getCameras();
-      if (!devices || devices.length === 0) {
-        throw new Error("No cameras found on this device");
-      }
-      
-      const backCamera = devices.find(c => c.label.toLowerCase().includes('back') || c.label.toLowerCase().includes('environment'));
-      const cameraId = backCamera ? backCamera.id : devices[0].id;
-
       await scanner.start(
-        cameraId,
+        { facingMode: "environment" },
         { fps: 10, qrbox: { width: 250, height: 250 } },
         (decodedText) => {
           let code = decodedText.trim();
