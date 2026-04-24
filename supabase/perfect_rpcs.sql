@@ -1,3 +1,8 @@
+-- DROP EXISTING FUNCTIONS FIRST
+DROP FUNCTION IF EXISTS public.claim_reward_by_phone(text);
+DROP FUNCTION IF EXISTS public.validate_reward_qr(text);
+DROP FUNCTION IF EXISTS public.redeem_reward_qr(text);
+
 -- 1. claim_reward_by_phone
 CREATE OR REPLACE FUNCTION public.claim_reward_by_phone(input_phone text)
 RETURNS jsonb
@@ -153,10 +158,10 @@ BEGIN
 END;
 $$;
 
--- Grant permissions so the frontend app can actually call these functions
+-- 4. Grant permissions so the frontend app can actually call these functions
 GRANT EXECUTE ON FUNCTION public.claim_reward_by_phone(text) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.validate_reward_qr(text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.redeem_reward_qr(text) TO authenticated;
 
--- Force Supabase to reload its API
+-- 5. Force Supabase to reload its API
 NOTIFY pgrst, 'reload schema';
