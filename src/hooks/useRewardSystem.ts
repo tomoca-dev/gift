@@ -98,13 +98,16 @@ export function useRewardSystem() {
       if (!result || !claimSucceeded) {
         setCustomer(null);
         const msg = result?.message ?? "Not eligible";
+        console.warn("Claim rejected by database:", { msg, status: claimStatus, result });
+        
         if (msg.toLowerCase().includes("already") || claimStatus === "already-redeemed" || claimStatus === "already-used") {
           setStatus("already-redeemed");
         } else if (msg.toLowerCase().includes("expir") || claimStatus === "expired") {
           setStatus("expired");
         } else {
           setStatus("not-approved");
-          console.warn("Claim rejected:", msg);
+          // We'll pass the message through to the UI via a toast if needed, 
+          // or just rely on the StatusScreen which shows a generic message.
         }
         return;
       }
@@ -130,8 +133,10 @@ export function useRewardSystem() {
         phone_raw: phone,
       } as RewardCustomer);
       setStatus("approved");
-    } catch (error) {
-      console.error("Claim error:", error);
+    } catch (error: any) {
+      console.error("CRITICAL Claim Error:", error);
+      // If it's a Supabase error, it might have a message
+      const errorMsg = error?.message || "Unknown server error";
       setCustomer(null);
       setStatus("not-approved");
     }
