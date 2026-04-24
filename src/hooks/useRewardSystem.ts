@@ -11,9 +11,7 @@ export type RewardStatus =
   | "already-redeemed"
   | "expired";
 
-// The customer shown on the approved screen — mapped from gift_recipients
 export type RewardCustomer = Tables<"gift_recipients"> & {
-  // Extra fields surfaced from the claim RPC
   qr_token?: string | null;
   qr_expires_at?: string | null;
   phone?: string;
@@ -21,7 +19,6 @@ export type RewardCustomer = Tables<"gift_recipients"> & {
   redemption_code?: string;
 };
 
-// Shape returned by claim_reward_by_phone RPC
 type ClaimRpcRow = {
   customer_id: string | null;
   message: string;
@@ -29,48 +26,65 @@ type ClaimRpcRow = {
   qr_expires_at: string | null;
   qr_token: string | null;
   redemption_code: string | null;
-  reward_type: string | null;
+  reward_type?: string | null;
+  gift_type?: string | null;
   status: string;
 };
 
-// Shape returned by validate_reward_qr RPC
 type ValidateRpcRow = {
   customer_id: string | null;
   message: string;
   phone: string | null;
   qr_expires_at: string | null;
   redemption_code: string | null;
-  reward_type: string | null;
+  reward_type?: string | null;
+  gift_type?: string | null;
   status: string;
 };
 
-// Shape returned by redeem_reward_qr RPC
 type RedeemRpcRow = {
   customer_id: string | null;
   message: string;
   phone: string | null;
   redeemed_at: string | null;
   redemption_code: string | null;
-  reward_type: string | null;
+  reward_type?: string | null;
+  gift_type?: string | null;
   status: string;
 };
 
 export type RedeemResult = "valid" | "already-used" | "expired" | "invalid";
+
 export type CashierCheckResult = {
   status: RedeemResult;
   message: string;
   phone?: string | null;
   reward_type?: string | null;
+  gift_type?: string | null;
   redemption_code?: string | null;
   qr_expires_at?: string | null;
 };
 
+function firstRpcRow<T>(data: unknown): T | null {
+  if (Array.isArray(data)) return (data[0] as T) ?? null;
+  if (data && typeof data === "object") return data as T;
+  return null;
+}
+
+function getGiftType(row?: { gift_type?: string | null; reward_type?: string | null } | null) {
+  return row?.gift_type ?? row?.reward_type ?? "1 Free Coffee";
+}
+
 function mapStatusToRedeemResult(status: string, message: string): RedeemResult {
   const normalized = (status || "").toLowerCase().replace(/_/g, "-");
-  if (normalized === "valid" || normalized === "success" || normalized === "approved") return "valid";
   const msg = (message || "").toLowerCase();
-  if (msg.includes("already") || normalized === "already-redeemed" || normalized === "already-used") return "already-used";
+
+  if (["valid", "success", "approved"].includes(normalized)) return "valid";
+  if (msg.includes("already") || ["already-redeemed", "already-used"].includes(normalized)) {
+    return "already-used";
+  }
   if (msg.includes("expir") || normalized === "expired") return "expired";
+
   return "invalid";
 }
 
@@ -82,38 +96,52 @@ export function useRewardSystem() {
     setStatus("checking");
 
     try {
+      console.log("PHONE SENT TO SUPABASE:", phone);
+
       const { data, error } = await supabase.rpc("claim_reward_by_phone", {
         input_phone: phone,
       });
 
+      console.log("CLAIM DATA:", data);
+      console.log("CLAIM ERROR:", error);
+
       if (error) throw error;
 
-      // Now expecting a single object (JSONB)
-      const result = data as any;
+      const result = firstRpcRow<ClaimRpcRow>(data);
       const claimStatus = (result?.status || "").toLowerCase().replace(/_/g, "-");
       const claimSucceeded = ["approved", "valid", "success"].includes(claimStatus);
 
       if (!result || !claimSucceeded) {
         setCustomer(null);
+
         const msg = result?.message ?? "Not eligible";
-        
-        if (msg.toLowerCase().includes("already") || claimStatus === "already-redeemed" || claimStatus === "already-used") {
+
+        if (
+          msg.toLowerCase().includes("already") ||
+          claimStatus === "already-redeemed" ||
+          claimStatus === "already-used"
+        ) {
           setStatus("already-redeemed");
         } else if (msg.toLowerCase().includes("expir") || claimStatus === "expired") {
           setStatus("expired");
         } else {
           setStatus("not-approved");
+          console.warn("Claim rejected:", msg);
         }
+
         return;
       }
+
+      const giftType = getGiftType(result);
 
       setCustomer({
         id: result.customer_id ?? crypto.randomUUID(),
         phone_normalized: result.phone ?? phone,
         phone: result.phone ?? phone,
-        gift_type: result.reward_type ?? "1 Free Coffee",
-        reward_type: result.reward_type ?? "1 Free Coffee",
-        redemption_code: result.redemption_code ?? result.qr_token?.slice(-8).toUpperCase() ?? "",
+        gift_type: giftType,
+        reward_type: giftType,
+        redemption_code:
+          result.redemption_code ?? result.qr_token?.slice(-8).toUpperCase() ?? "",
         qr_token: result.qr_token,
         qr_expires_at: result.qr_expires_at,
         status: "claimed",
@@ -127,11 +155,10 @@ export function useRewardSystem() {
         import_batch_id: null,
         phone_raw: phone,
       } as RewardCustomer);
+
       setStatus("approved");
-    } catch (error: any) {
-      console.error("CRITICAL Claim Error:", error);
-      // If it's a Supabase error, it might have a message
-      const errorMsg = error?.message || "Unknown server error";
+    } catch (error) {
+      console.error("Claim error:", error);
       setCustomer(null);
       setStatus("not-approved");
     }
@@ -139,32 +166,35 @@ export function useRewardSystem() {
 
   const validateReward = async (code: string): Promise<CashierCheckResult> => {
     try {
+      const cleanCode = code.trim();
+
       const { data, error } = await supabase.rpc("validate_reward_qr", {
-        input_code: code,
+        input_code: cleanCode,
       });
 
       if (error) {
+        console.error("validateReward RPC error:", error);
         return { status: "invalid", message: error.message };
       }
 
-      const rows = data as ValidateRpcRow[] | null;
-      const result = Array.isArray(rows) ? rows[0] : null;
+      const result = firstRpcRow<ValidateRpcRow>(data);
 
       if (!result) {
         return { status: "invalid", message: "QR code not found." };
       }
 
-      const mappedStatus = mapStatusToRedeemResult(result.status, result.message);
+      const giftType = getGiftType(result);
 
       return {
-        status: mappedStatus,
+        status: mapStatusToRedeemResult(result.status, result.message),
         message: result.message,
         phone: result.phone,
-        reward_type: result.reward_type,
+        reward_type: giftType,
+        gift_type: giftType,
         redemption_code: result.redemption_code,
         qr_expires_at: result.qr_expires_at,
       };
-    } catch (err: any) {
+    } catch (err) {
       console.error("validateReward error:", err);
       return { status: "invalid", message: "An unexpected error occurred." };
     }
@@ -172,31 +202,34 @@ export function useRewardSystem() {
 
   const redeemReward = async (code: string): Promise<CashierCheckResult> => {
     try {
+      const cleanCode = code.trim();
+
       const { data, error } = await supabase.rpc("redeem_reward_qr", {
-        input_code: code,
+        input_code: cleanCode,
       });
 
       if (error) {
+        console.error("redeemReward RPC error:", error);
         return { status: "invalid", message: error.message };
       }
 
-      const rows = data as RedeemRpcRow[] | null;
-      const result = Array.isArray(rows) ? rows[0] : null;
+      const result = firstRpcRow<RedeemRpcRow>(data);
 
       if (!result) {
         return { status: "invalid", message: "Unable to redeem this gift." };
       }
 
-      const mappedStatus = mapStatusToRedeemResult(result.status, result.message);
+      const giftType = getGiftType(result);
 
       return {
-        status: mappedStatus,
+        status: mapStatusToRedeemResult(result.status, result.message),
         message: result.message,
         phone: result.phone,
-        reward_type: result.reward_type,
+        reward_type: giftType,
+        gift_type: giftType,
         redemption_code: result.redemption_code,
       };
-    } catch (err: any) {
+    } catch (err) {
       console.error("redeemReward error:", err);
       return { status: "invalid", message: "An unexpected error occurred." };
     }
@@ -207,5 +240,13 @@ export function useRewardSystem() {
     setCustomer(null);
   };
 
-  return { status, customer, checkPhone, validateReward, redeemReward, reset, setStatus };
+  return {
+    status,
+    customer,
+    checkPhone,
+    validateReward,
+    redeemReward,
+    reset,
+    setStatus,
+  };
 }
