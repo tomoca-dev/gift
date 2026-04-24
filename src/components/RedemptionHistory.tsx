@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { History, CheckCircle2, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { maskPhone } from "@/lib/phone";
 import type { Tables } from "@/integrations/supabase/types";
 
 type RewardCustomer = Tables<"reward_customers">;
@@ -73,7 +74,7 @@ const RedemptionHistory = () => {
               className="glass-card rounded-lg p-3 flex items-center justify-between"
             >
               <div>
-                <p className="font-body text-sm text-foreground">{r.phone}</p>
+                <p className="font-body text-sm text-foreground">{r.phone ? maskPhone(r.phone) : "—"}</p>
                 <p className="font-body text-xs text-muted-foreground">{r.reward_type}</p>
               </div>
               <div className="flex items-center gap-2">

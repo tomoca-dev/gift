@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import QRScanner from "@/components/QRScanner";
 import RedemptionHistory from "@/components/RedemptionHistory";
 import { maskPhone } from "@/lib/phone";
+import { supabase } from "@/integrations/supabase/client";
 import type { CashierCheckResult } from "@/hooks/useRewardSystem";
 
 const FloatingBeansBackgroundLazy = lazy(() =>
@@ -32,6 +33,44 @@ const CashierScreen = ({ onValidate, onRedeem }: CashierScreenProps) => {
   const [details, setDetails] = useState<CashierCheckResult | null>(null);
   const [redeemed, setRedeemed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [stats, setStats] = useState({ scans: 0, valid: 0, redeemed: 0 });
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayIso = today.toISOString();
+
+      const [{ count: scansCount }, { count: redeemedCount }] = await Promise.all([
+        supabase
+          .from("reward_customers")
+          .select("id", { count: "exact", head: true })
+          .in("status", ["claimed", "redeemed"])
+          .gte("claimed_at", todayIso),
+        supabase
+          .from("reward_customers")
+          .select("id", { count: "exact", head: true })
+          .eq("status", "redeemed")
+          .gte("redeemed_at", todayIso),
+      ]);
+
+      setStats({
+        scans: scansCount ?? 0,
+        valid: (scansCount ?? 0) - (redeemedCount ?? 0),
+        redeemed: redeemedCount ?? 0,
+      });
+    };
+
+    fetchStats();
+
+    // Refresh stats in real-time on any DB update
+    const channel = supabase
+      .channel("cashier_stats")
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "reward_customers" }, fetchStats)
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -119,17 +158,17 @@ const CashierScreen = ({ onValidate, onRedeem }: CashierScreenProps) => {
           <div className="w-full flex justify-between px-5 py-3 bg-secondary/30 rounded-xl border border-primary/20 backdrop-blur mb-2">
              <div className="text-center">
                <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-1 font-body">Scans Today</p>
-               <p className="text-lg font-bold text-foreground font-display">42</p>
+               <p className="text-lg font-bold text-foreground font-display">{stats.scans}</p>
              </div>
              <div className="w-px bg-border"></div>
              <div className="text-center">
                <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-1 font-body">Valid</p>
-               <p className="text-lg font-bold text-success font-display">30</p>
+               <p className="text-lg font-bold text-success font-display">{stats.valid}</p>
              </div>
              <div className="w-px bg-border"></div>
              <div className="text-center">
                <p className="text-[10px] text-muted-foreground uppercase tracking-widest mb-1 font-body">Redeemed</p>
-               <p className="text-lg font-bold text-primary font-display">25</p>
+               <p className="text-lg font-bold text-primary font-display">{stats.redeemed}</p>
              </div>
           </div>
 

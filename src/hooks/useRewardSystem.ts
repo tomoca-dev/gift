@@ -99,28 +99,95 @@ export function useRewardSystem() {
   };
 
   const validateReward = async (code: string): Promise<CashierCheckResult> => {
-    // Note: The newer system uses redeem_gift_by_qr for both validation and redemption.
-    // For now, we'll keep the stubs or update them if the RPCs are available.
-    return { status: "invalid", message: "Validation not implemented in new system." };
+    try {
+      // We use the check_gift_by_qr RPC to validate without redeeming.
+      // Falls back to redeem_gift_by_qr if check_gift_by_qr doesn't exist.
+      const { data, error } = await supabase.rpc("check_gift_by_qr" as any, {
+        input_token: code,
+      });
+
+      // If the check RPC doesn't exist, fall back to redeem_gift_by_qr
+      if (error && error.code === "42883") {
+        // RPC not found — just peek via select on reward_customers
+        const { data: row, error: qErr } = await supabase
+          .from("reward_customers")
+          .select("phone_normalized, gift_type, redemption_code, status, qr_expires_at")
+          .eq("qr_token", code)
+          .maybeSingle();
+
+        if (qErr || !row) {
+          return { status: "invalid", message: "QR code not found." };
+        }
+
+        if (row.status === "redeemed") {
+          return { status: "already-used", message: "This reward has already been redeemed.", phone: row.phone_normalized, reward_type: row.gift_type, redemption_code: row.redemption_code };
+        }
+
+        if (row.qr_expires_at && new Date(row.qr_expires_at) < new Date()) {
+          return { status: "expired", message: "This QR code has expired.", phone: row.phone_normalized, reward_type: row.gift_type };
+        }
+
+        return {
+          status: "valid",
+          message: "Valid — ready to redeem.",
+          phone: row.phone_normalized,
+          reward_type: row.gift_type,
+          redemption_code: row.redemption_code,
+          qr_expires_at: row.qr_expires_at,
+        };
+      }
+
+      if (error) {
+        return { status: "invalid", message: error.message };
+      }
+
+      const result = data as any;
+      if (!result || !result.success) {
+        const msg: string = result?.message ?? "Invalid code.";
+        if (msg.toLowerCase().includes("already")) return { status: "already-used", message: msg };
+        if (msg.toLowerCase().includes("expir")) return { status: "expired", message: msg };
+        return { status: "invalid", message: msg };
+      }
+
+      return {
+        status: "valid",
+        message: result.message ?? "Valid — ready to redeem.",
+        phone: result.phone_normalized ?? result.phone,
+        reward_type: result.gift_type ?? result.reward_type,
+        redemption_code: result.redemption_code,
+        qr_expires_at: result.expires_at,
+      };
+    } catch (err: any) {
+      console.error("validateReward error:", err);
+      return { status: "invalid", message: "An unexpected error occurred." };
+    }
   };
 
   const redeemReward = async (token: string): Promise<CashierCheckResult> => {
-    const { data, error } = await supabase.rpc("redeem_gift_by_qr", {
-      input_token: token,
-    });
+    try {
+      const { data, error } = await supabase.rpc("redeem_gift_by_qr", {
+        input_token: token,
+      });
 
-    const result = data as any;
+      const result = data as any;
 
-    if (error || !result || !result.success) {
-      return { status: "invalid", message: result?.message || "Unable to redeem this gift." };
+      if (error || !result || !result.success) {
+        const msg: string = result?.message || error?.message || "Unable to redeem this gift.";
+        if (msg.toLowerCase().includes("already")) return { status: "already-used", message: msg };
+        if (msg.toLowerCase().includes("expir")) return { status: "expired", message: msg };
+        return { status: "invalid", message: msg };
+      }
+
+      return {
+        status: "valid",
+        message: result.message,
+        phone: result.phone_normalized ?? result.recipient_id,
+        reward_type: result.gift_type,
+      };
+    } catch (err: any) {
+      console.error("redeemReward error:", err);
+      return { status: "invalid", message: "An unexpected error occurred." };
     }
-
-    return {
-      status: "valid",
-      message: result.message,
-      phone: result.recipient_id, // Or use a separate field if available
-      reward_type: result.gift_type,
-    };
   };
 
   const reset = () => {
