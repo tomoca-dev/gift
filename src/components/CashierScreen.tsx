@@ -46,7 +46,7 @@ const CashierScreen = ({ onValidate, onRedeem }: CashierScreenProps) => {
           .from("reward_customers")
           .select("id", { count: "exact", head: true })
           .in("status", ["claimed", "redeemed"])
-          .gte("claimed_at", todayIso),
+          .gte("created_at", todayIso),
         supabase
           .from("reward_customers")
           .select("id", { count: "exact", head: true })
